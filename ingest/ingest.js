@@ -5,7 +5,7 @@
 //   node ingest/ingest.js --list-chats [--backup=<path>]        list iMessage group chats, then stop
 //   node ingest/ingest.js <export.json ...> [options]           run the full pipeline
 //
-// Options: --model=llama3:latest --no-ollama --candidates=2000 --preview=10
+// Options: --model=qwen2.5:7b-instruct --no-ollama --candidates=2000 --preview=10
 "use strict";
 
 const fs = require("fs");
@@ -17,7 +17,7 @@ const LAUGH_EMOJI_NAMES = new Set(["😂", "🤣", "💀", "😭", "🫠", "😹
 
 function parseArgs(argv) {
   const files = [];
-  let model = "llama3:latest";
+  let model = "qwen2.5:7b-instruct";
   let useOllama = true;
   let candidates = 2000;
   let preview = 10;
