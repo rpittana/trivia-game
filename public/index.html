@@ -9,19 +9,25 @@
 <body>
   <main id="app">
     <section id="screen-join" class="screen active">
-      <h1>Who Said It?</h1>
-      <p class="subtitle">Guess who sent the message.</p>
-      <label>Your name
+      <div class="join-card">
+        <div class="join-logo">🎙️</div>
+        <h1>Who Said It?</h1>
+        <p class="subtitle">Guess who sent the message.</p>
+
+        <label for="join-name">Your name</label>
         <input id="join-name" type="text" maxlength="32" placeholder="Riley" autocomplete="off" />
-      </label>
-      <div class="join-actions">
-        <button id="btn-create">Create a room</button>
+
+        <button id="btn-create" class="btn-primary">Create a room</button>
+
+        <div class="divider"><span>or join with a code</span></div>
+
         <div class="join-row">
-          <input id="join-code" type="text" maxlength="4" placeholder="ROOM CODE" autocomplete="off" />
-          <button id="btn-join">Join</button>
+          <input id="join-code" type="text" maxlength="4" placeholder="CODE" autocomplete="off" class="code-input" />
+          <button id="btn-join" class="btn-secondary">Join</button>
         </div>
+
+        <p id="join-error" class="error"></p>
       </div>
-      <p id="join-error" class="error"></p>
     </section>
 
     <section id="screen-lobby" class="screen">
