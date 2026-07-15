@@ -4,10 +4,10 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const game = require("./game");
 
-function mkQuote(id, authorId, overrides = {}) {
+function mkQuote(id, personId, overrides = {}) {
   return {
     id,
-    authorId,
+    personId,
     content: `quote ${id}`,
     sentAt: "2024-01-01T00:00:00Z",
     humorScore: 50,
@@ -17,8 +17,8 @@ function mkQuote(id, authorId, overrides = {}) {
   };
 }
 
-function mkAuthors(ids) {
-  return ids.map((id) => ({ id, displayName: `author-${id}` }));
+function mkPeople(ids) {
+  return ids.map((id) => ({ id, displayName: `person-${id}` }));
 }
 
 // deterministic PRNG for reproducible tests
@@ -30,30 +30,57 @@ function seededRng(seed) {
   };
 }
 
-test("drawQuotes respects the per-author cap", () => {
+test("drawQuotes allocates equal slots per person, redistributing shortfall (100/10/3 -> 6/6/3)", () => {
   const candidates = [];
-  for (let i = 0; i < 20; i++) candidates.push(mkQuote(`a${i}`, "loud-friend"));
-  for (let i = 0; i < 5; i++) candidates.push(mkQuote(`b${i}`, "quiet-friend-1"));
-  for (let i = 0; i < 5; i++) candidates.push(mkQuote(`c${i}`, "quiet-friend-2"));
+  for (let i = 0; i < 100; i++) candidates.push(mkQuote(`a${i}`, "loud-friend"));
+  for (let i = 0; i < 10; i++) candidates.push(mkQuote(`b${i}`, "medium-friend"));
+  for (let i = 0; i < 3; i++) candidates.push(mkQuote(`c${i}`, "quiet-friend"));
 
   const drawn = game.drawQuotes(candidates, 15, "mixed", seededRng(42));
   const counts = new Map();
-  for (const q of drawn) counts.set(q.authorId, (counts.get(q.authorId) || 0) + 1);
+  for (const q of drawn) counts.set(q.personId, (counts.get(q.personId) || 0) + 1);
 
-  // distinctAuthors=3, cap = ceil(15/3)+1 = 6
-  assert.ok(counts.get("loud-friend") <= 6, `loud-friend appeared ${counts.get("loud-friend")} times`);
   assert.equal(drawn.length, 15);
+  assert.equal(counts.get("loud-friend"), 6);
+  assert.equal(counts.get("medium-friend"), 6);
+  assert.equal(counts.get("quiet-friend"), 3);
+});
+
+test("drawQuotes splits evenly with no shortfall", () => {
+  const candidates = [];
+  for (const person of ["p1", "p2", "p3"]) {
+    for (let i = 0; i < 20; i++) candidates.push(mkQuote(`${person}-${i}`, person));
+  }
+  const drawn = game.drawQuotes(candidates, 15, "mixed", seededRng(5));
+  const counts = new Map();
+  for (const q of drawn) counts.set(q.personId, (counts.get(q.personId) || 0) + 1);
+  assert.equal(counts.get("p1"), 5);
+  assert.equal(counts.get("p2"), 5);
+  assert.equal(counts.get("p3"), 5);
+});
+
+test("drawQuotes never gives a 12/2/1-style lopsided draw", () => {
+  const candidates = [];
+  for (let i = 0; i < 100; i++) candidates.push(mkQuote(`a${i}`, "loud-friend"));
+  for (let i = 0; i < 10; i++) candidates.push(mkQuote(`b${i}`, "medium-friend"));
+  for (let i = 0; i < 3; i++) candidates.push(mkQuote(`c${i}`, "quiet-friend"));
+
+  const drawn = game.drawQuotes(candidates, 15, "mixed", seededRng(99));
+  const counts = new Map();
+  for (const q of drawn) counts.set(q.personId, (counts.get(q.personId) || 0) + 1);
+  assert.notEqual(counts.get("loud-friend"), 12);
+  assert.ok(counts.get("quiet-friend") >= 3);
 });
 
 test("drawQuotes returns no duplicate quote ids", () => {
   const candidates = [];
-  for (let i = 0; i < 30; i++) candidates.push(mkQuote(`q${i}`, `author${i % 4}`));
+  for (let i = 0; i < 30; i++) candidates.push(mkQuote(`q${i}`, `person${i % 4}`));
   const drawn = game.drawQuotes(candidates, 15, "mixed", seededRng(7));
   const ids = new Set(drawn.map((q) => q.id));
   assert.equal(ids.size, drawn.length);
 });
 
-test("drawQuotes tops up past the cap when there aren't enough distinct authors", () => {
+test("drawQuotes tops out cleanly when there are very few distinct people", () => {
   const candidates = [mkQuote("x1", "solo"), mkQuote("x2", "solo"), mkQuote("x3", "solo")];
   const drawn = game.drawQuotes(candidates, 3, "mixed", seededRng(1));
   assert.equal(drawn.length, 3);
@@ -63,21 +90,21 @@ test("submitAnswer rejects a second answer from the same player", () => {
   const g = game.createGame("ABCD", "host1", "Host");
   game.addPlayer(g, "p2", "Player Two");
   const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
-  const authors = mkAuthors(["host1", "p2"]);
-  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, authors, seededRng(3), 0);
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, people, seededRng(3), 0);
 
   const first = game.submitAnswer(g, "p2", "host1", 1000);
   const second = game.submitAnswer(g, "p2", "p2", 1500);
   assert.equal(first, true);
   assert.equal(second, false);
-  assert.equal(g.currentRound.answers.get("p2").authorId, "host1");
+  assert.equal(g.currentRound.answers.get("p2").personId, "host1");
 });
 
 test("submitAnswer rejects an answer after the round deadline", () => {
   const g = game.createGame("ABCD", "host1", "Host");
   const candidates = [mkQuote("q1", "host1")];
-  const authors = mkAuthors(["host1"]);
-  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, authors, seededRng(3), 0);
+  const people = mkPeople(["host1"]);
+  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, people, seededRng(3), 0);
 
   const result = game.submitAnswer(g, "host1", "host1", 25000); // well past endsAt=20000
   assert.equal(result, false);
@@ -88,14 +115,14 @@ test("nextRound and game:start are host-only", () => {
   const g = game.createGame("ABCD", "host1", "Host");
   game.addPlayer(g, "p2", "Player Two");
   const candidates = [mkQuote("q1", "host1")];
-  const authors = mkAuthors(["host1"]);
+  const people = mkPeople(["host1"]);
 
   assert.throws(
-    () => game.startGame(g, "p2", { rounds: 1, roundSeconds: 20 }, candidates, authors, seededRng(1), 0),
+    () => game.startGame(g, "p2", { rounds: 1, roundSeconds: 20 }, candidates, people, seededRng(1), 0),
     game.GameError
   );
 
-  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, authors, seededRng(1), 0);
+  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, people, seededRng(1), 0);
   game.revealRound(g, 5000);
   assert.throws(() => game.nextRound(g, "p2", seededRng(1), 6000), game.GameError);
 });
@@ -107,8 +134,8 @@ test("scoring: correct answer awards 100 + speed bonus, wrong answer awards 0", 
   game.addPlayer(g, "wrong", "Wrong");
   game.addPlayer(g, "absent", "Absent");
   const candidates = [mkQuote("q1", "host1")];
-  const authors = mkAuthors(["host1", "fast", "slow", "wrong", "absent"]);
-  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, authors, seededRng(9), 0);
+  const people = mkPeople(["host1", "fast", "slow", "wrong", "absent"]);
+  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20 }, candidates, people, seededRng(9), 0);
   // round starts at t=0, endsAt=20000
 
   game.submitAnswer(g, "fast", "host1", 1000); // 19s remaining
@@ -130,11 +157,11 @@ test("scoring: correct answer awards 100 + speed bonus, wrong answer awards 0", 
   assert.ok(byPlayer.fast.points > byPlayer.slow.points, "faster answer should score more");
 });
 
-test("buildChoices always includes the correct author exactly once", () => {
-  const quote = mkQuote("q1", "author3");
-  const authors = mkAuthors(["author1", "author2", "author3", "author4", "author5"]);
-  const choices = game.buildChoices(quote, authors, seededRng(2));
-  const matches = choices.filter((c) => c.id === "author3");
+test("buildChoices always includes the correct person exactly once", () => {
+  const quote = mkQuote("q1", "person3");
+  const people = mkPeople(["person1", "person2", "person3", "person4", "person5"]);
+  const choices = game.buildChoices(quote, people, seededRng(2));
+  const matches = choices.filter((c) => c.id === "person3");
   assert.equal(matches.length, 1);
 });
 

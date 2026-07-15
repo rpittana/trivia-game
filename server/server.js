@@ -67,7 +67,7 @@ function emitRoundStart(roomCode, round, roundNumber) {
     roundNumber,
     totalRounds: g.settings.rounds,
     quote: { content: round.quote.content },
-    choices: round.choices.map((a) => ({ authorId: a.id, displayName: a.displayName })),
+    choices: round.choices.map((p) => ({ personId: p.id, displayName: p.displayName })),
     endsAt: round.endsAt,
   });
 }
@@ -174,9 +174,9 @@ io.on("connection", (socket) => {
     const g = rooms.get(roomCode);
     if (!g) return;
     try {
-      const authors = db.getAuthors();
+      const people = db.getPeople();
       const candidates = db.getCandidateQuotes();
-      const round = game.startGame(g, playerId, settings || {}, candidates, authors, Math.random, Date.now());
+      const round = game.startGame(g, playerId, settings || {}, candidates, people, Math.random, Date.now());
       db.incrementTimesPlayed(round.quote.id);
       emitRoundStart(roomCode, round, g.roundIndex + 1);
       scheduleExpiry(roomCode);
@@ -185,12 +185,12 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("round:answer", ({ authorId }) => {
+  socket.on("round:answer", ({ personId }) => {
     const { roomCode, playerId } = socket.data;
     const g = rooms.get(roomCode);
     if (!g) return;
     try {
-      const accepted = game.submitAnswer(g, playerId, authorId, Date.now());
+      const accepted = game.submitAnswer(g, playerId, personId, Date.now());
       if (accepted) {
         io.to(roomCode).emit("round:progress", { answeredPlayerIds: [...g.currentRound.answers.keys()] });
         if (game.allAnswered(g)) doReveal(roomCode);

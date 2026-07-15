@@ -13,58 +13,87 @@ function scoreFor(quote, pool) {
 
 /**
  * Selects `count` quotes from `candidates` (plain objects with
- * {id, authorId, content, sentAt, humorScore, interestScore, timesPlayed}),
- * preferring high-scoring, less-recently-played quotes, with jitter so
- * repeat games differ, and a per-author cap so one chatty friend can't
- * dominate a single game's draw.
+ * {id, personId, content, sentAt, humorScore, interestScore, timesPlayed}).
+ * Allocates roughly equal slots to every person who has candidate quotes
+ * (floor(count/P) each, remainder spread randomly), fills each person's
+ * slots from their own best-scoring quotes, and redistributes any shortfall
+ * (someone with too few quotes) round-robin across people who have more —
+ * so one chatty friend never dominates the draw. Play order is shuffled
+ * at the end; no-repeat-within-game holds by construction.
  */
 function drawQuotes(candidates, count, pool, rng = Math.random) {
   if (candidates.length === 0) return [];
-  const distinctAuthors = new Set(candidates.map((c) => c.authorId)).size;
-  const cap = Math.ceil(count / Math.max(1, distinctAuthors)) + 1;
 
-  const weighted = candidates.map((c) => ({
-    quote: c,
-    weight: scoreFor(c, pool) * (1 / (1 + c.timesPlayed)) * (0.7 + 0.3 * rng()),
-  }));
-  weighted.sort((a, b) => b.weight - a.weight);
-
-  const authorCounts = new Map();
-  const selected = [];
-  const selectedIds = new Set();
-
-  for (const { quote } of weighted) {
-    if (selected.length >= count) break;
-    const n = authorCounts.get(quote.authorId) || 0;
-    if (n < cap) {
-      selected.push(quote);
-      selectedIds.add(quote.id);
-      authorCounts.set(quote.authorId, n + 1);
-    }
+  const byPerson = new Map();
+  for (const c of candidates) {
+    if (!byPerson.has(c.personId)) byPerson.set(c.personId, []);
+    byPerson.get(c.personId).push(c);
   }
-  // Cap made it impossible to fill the draw (e.g. very few distinct authors) — top up ignoring the cap.
-  if (selected.length < count) {
-    for (const { quote } of weighted) {
-      if (selected.length >= count) break;
-      if (!selectedIds.has(quote.id)) {
-        selected.push(quote);
-        selectedIds.add(quote.id);
+  const personIds = [...byPerson.keys()];
+  const target = Math.min(count, candidates.length);
+
+  const base = Math.floor(target / personIds.length);
+  const remainder = target - base * personIds.length;
+
+  const shuffledPeople = [...personIds];
+  for (let i = shuffledPeople.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [shuffledPeople[i], shuffledPeople[j]] = [shuffledPeople[j], shuffledPeople[i]];
+  }
+  const slots = new Map(personIds.map((id) => [id, base]));
+  for (let i = 0; i < remainder; i++) slots.set(shuffledPeople[i], slots.get(shuffledPeople[i]) + 1);
+
+  const weightedByPerson = new Map();
+  for (const [id, list] of byPerson) {
+    const weighted = list.map((c) => ({
+      quote: c,
+      weight: scoreFor(c, pool) * (1 / (1 + c.timesPlayed)) * (0.7 + 0.3 * rng()),
+    }));
+    weighted.sort((a, b) => b.weight - a.weight);
+    weightedByPerson.set(id, weighted);
+  }
+
+  const selected = [];
+  const consumed = new Map(personIds.map((id) => [id, 0]));
+  let shortfall = 0;
+
+  for (const id of personIds) {
+    const want = slots.get(id);
+    const available = weightedByPerson.get(id);
+    const take = Math.min(want, available.length);
+    for (let i = 0; i < take; i++) selected.push(available[i].quote);
+    consumed.set(id, take);
+    shortfall += want - take;
+  }
+
+  let stillNeeded = shortfall;
+  let progress = true;
+  while (stillNeeded > 0 && progress) {
+    progress = false;
+    for (const id of shuffledPeople) {
+      if (stillNeeded <= 0) break;
+      const idx = consumed.get(id);
+      const available = weightedByPerson.get(id);
+      if (idx < available.length) {
+        selected.push(available[idx].quote);
+        consumed.set(id, idx + 1);
+        stillNeeded--;
+        progress = true;
       }
     }
   }
 
-  // Shuffle play order (the weighting above sorted by score, not play sequence).
   for (let i = selected.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [selected[i], selected[j]] = [selected[j], selected[i]];
   }
-  return selected.slice(0, count);
+  return selected.slice(0, target);
 }
 
-/** Builds the answer-choice list for a round: the true author plus up to 7 random others, shuffled. */
-function buildChoices(quote, allAuthors, rng = Math.random) {
-  const correct = allAuthors.find((a) => a.id === quote.authorId);
-  const others = allAuthors.filter((a) => a.id !== quote.authorId);
+/** Builds the answer-choice list for a round: the true person plus up to 7 random others, shuffled. */
+function buildChoices(quote, allPeople, rng = Math.random) {
+  const correct = allPeople.find((p) => p.id === quote.personId);
+  const others = allPeople.filter((p) => p.id !== quote.personId);
   for (let i = others.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [others[i], others[j]] = [others[j], others[i]];
@@ -85,7 +114,7 @@ function createGame(roomCode, hostId, hostName, now = Date.now()) {
     status: "lobby",
     settings: null,
     quotes: [],
-    authors: [],
+    people: [],
     roundIndex: -1,
     currentRound: null,
     createdAt: now,
@@ -140,7 +169,7 @@ function requireHost(game, requesterId) {
   if (requesterId !== game.hostId) throw new GameError("Only the host can do that.");
 }
 
-function startGame(game, hostId, settings, candidateQuotes, authors, rng = Math.random, now = Date.now()) {
+function startGame(game, hostId, settings, candidateQuotes, people, rng = Math.random, now = Date.now()) {
   requireHost(game, hostId);
   if (game.status !== "lobby") throw new GameError("Game already started.");
   const rounds = settings.rounds || 15;
@@ -152,7 +181,7 @@ function startGame(game, hostId, settings, candidateQuotes, authors, rng = Math.
 
   game.settings = { rounds: quotes.length, roundSeconds, pool };
   game.quotes = quotes;
-  game.authors = authors;
+  game.people = people;
   game.status = "in-progress";
   game.roundIndex = -1;
   for (const p of game.players.values()) p.score = 0;
@@ -168,25 +197,25 @@ function startNextRound(game, rng = Math.random, now = Date.now()) {
     return null;
   }
   const quote = game.quotes[game.roundIndex];
-  const choices = buildChoices(quote, game.authors, rng);
+  const choices = buildChoices(quote, game.people, rng);
   game.currentRound = {
     quote,
     choices,
     endsAt: now + game.settings.roundSeconds * 1000,
-    answers: new Map(), // playerId -> { authorId, answeredAt }
+    answers: new Map(), // playerId -> { personId, answeredAt }
   };
   game.status = "in-progress";
   return game.currentRound;
 }
 
-function submitAnswer(game, playerId, authorId, now = Date.now()) {
+function submitAnswer(game, playerId, personId, now = Date.now()) {
   if (game.status !== "in-progress" || !game.currentRound) {
     throw new GameError("No round is currently active.");
   }
   if (!game.players.has(playerId)) throw new GameError("Unknown player.");
   if (now > game.currentRound.endsAt) return false; // too late, silently ignored
   if (game.currentRound.answers.has(playerId)) return false; // already answered, first answer wins
-  game.currentRound.answers.set(playerId, { authorId, answeredAt: now });
+  game.currentRound.answers.set(playerId, { personId, answeredAt: now });
   return true;
 }
 
@@ -203,17 +232,17 @@ function isRoundExpired(game, now = Date.now()) {
 function revealRound(game, now = Date.now()) {
   if (!game.currentRound) throw new GameError("No round is currently active.");
   const round = game.currentRound;
-  const correctAuthorId = round.quote.authorId;
+  const correctPersonId = round.quote.personId;
   const roundSeconds = game.settings.roundSeconds;
 
   const guesses = [];
   for (const player of game.players.values()) {
     const answer = round.answers.get(player.id);
     if (!answer) {
-      guesses.push({ playerId: player.id, authorId: null, correct: false, points: 0 });
+      guesses.push({ playerId: player.id, personId: null, correct: false, points: 0 });
       continue;
     }
-    const correct = answer.authorId === correctAuthorId;
+    const correct = answer.personId === correctPersonId;
     let points = 0;
     if (correct) {
       const elapsedMs = Math.max(0, Math.min(roundSeconds * 1000, answer.answeredAt - (round.endsAt - roundSeconds * 1000)));
@@ -221,12 +250,12 @@ function revealRound(game, now = Date.now()) {
       points = 100 + Math.round(50 * (timeRemaining / roundSeconds));
       player.score += points;
     }
-    guesses.push({ playerId: player.id, authorId: answer.authorId, correct, points });
+    guesses.push({ playerId: player.id, personId: answer.personId, correct, points });
   }
 
   game.status = "reveal";
   return {
-    correctAuthorId,
+    correctPersonId,
     sentAt: round.quote.sentAt,
     guesses,
     scores: [...game.players.values()].map((p) => ({ playerId: p.id, name: p.name, score: p.score })),
@@ -254,7 +283,7 @@ function playAgain(game, requesterId, candidateQuotes, rng = Math.random, now = 
   if (game.status !== "game-over") throw new GameError("Game isn't over yet.");
   game.status = "lobby";
   const settings = game.settings;
-  return { readyToStart: () => startGame(game, requesterId, settings, candidateQuotes, game.authors, rng, now) };
+  return { readyToStart: () => startGame(game, requesterId, settings, candidateQuotes, game.people, rng, now) };
 }
 
 module.exports = {

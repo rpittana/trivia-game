@@ -13,7 +13,20 @@
       "Bash(curl -sD - -o /dev/null http://localhost:3000/app.js)",
       "Bash(curl -sD - -o /dev/null http://localhost:3000/)",
       "Bash(netstat -ano)",
-      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")"
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "PowerShell($spots = @\\(\"$env:APPDATA\\\\Apple Computer\\\\MobileSync\\\\Backup\", \"$env:USERPROFILE\\\\Apple\\\\MobileSync\\\\Backup\"\\); foreach \\($s in $spots\\) { if \\(Test-Path $s\\) { \"FOUND BACKUP DIR: $s\"; Get-ChildItem $s | Select-Object Name, LastWriteTime } else { \"not present: $s\" } })",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\Documents\" -Directory | Select-Object Name, LastWriteTime)",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\Documents\\\\claude scripts\" -Recurse -Depth 2 | Select-Object FullName, Length, LastWriteTime | Format-Table -AutoSize | Out-String -Width 250)",
+      "Bash(node ingest/ingest.js --init-config \"data/Direct Messages - Danklin's Room [296394839820599298].json\")",
+      "Bash(rm -f data/quotes.db data/quotes.db-shm data/quotes.db-wal)",
+      "Bash(node ingest/ingest.js \"data/Direct Messages - Danklin's Room [296394839820599298].json\" --model=llama3:latest --preview=30)",
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\" //FO CSV)",
+      "Bash(taskkill //PID 24328 //F)",
+      "Bash(node -c ingest/imessage.js)",
+      "Bash(node ingest/ingest.js --list-chats)",
+      "Bash(node -c ingest/ingest.js)",
+      "Bash(node ingest/ingest.js --show-chat=195)"
     ]
   }
 }

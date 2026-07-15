@@ -126,7 +126,7 @@ socket.on("round:start", ({ roundNumber, totalRounds, quote, choices, endsAt }) 
     btn.addEventListener("click", () => {
       if (state.answered) return;
       state.answered = true;
-      socket.emit("round:answer", { authorId: choice.authorId });
+      socket.emit("round:answer", { personId: choice.personId });
       for (const b of choicesEl.querySelectorAll("button")) b.disabled = true;
       btn.classList.add("selected");
     });
@@ -149,11 +149,11 @@ socket.on("round:progress", ({ answeredPlayerIds }) => {
 
 // ---------- Reveal ----------
 
-socket.on("round:reveal", ({ correctAuthorId, sentAt, guesses, scores }) => {
+socket.on("round:reveal", ({ correctPersonId, sentAt, guesses, scores }) => {
   clearInterval(timerInterval);
   showScreen("reveal");
 
-  const correctChoice = state.lastChoices.find((c) => c.authorId === correctAuthorId);
+  const correctChoice = state.lastChoices.find((c) => c.personId === correctPersonId);
   const correctName = correctChoice ? correctChoice.displayName : "someone";
   document.getElementById("reveal-heading").textContent = `It was ${correctName}!`;
   document.getElementById("reveal-date").textContent = sentAt
@@ -164,7 +164,7 @@ socket.on("round:reveal", ({ correctAuthorId, sentAt, guesses, scores }) => {
   list.innerHTML = "";
   for (const g of guesses) {
     const player = state.players.find((p) => p.id === g.playerId);
-    const guessChoice = state.lastChoices.find((c) => c.authorId === g.authorId);
+    const guessChoice = state.lastChoices.find((c) => c.personId === g.personId);
     const li = document.createElement("li");
     li.className = g.correct ? "correct" : "incorrect";
     const guessedText = guessChoice ? guessChoice.displayName : "no answer";

@@ -6,14 +6,14 @@ const Database = require("better-sqlite3");
 const dbPath = path.join(__dirname, "..", "data", "quotes.db");
 const db = new Database(dbPath);
 
-function getAuthors() {
-  return db.prepare("SELECT id, display_name AS displayName FROM authors").all();
+function getPeople() {
+  return db.prepare("SELECT id, name AS displayName FROM people").all();
 }
 
 function getCandidateQuotes() {
   return db
     .prepare(
-      `SELECT id, author_id AS authorId, content, sent_at AS sentAt,
+      `SELECT id, person_id AS personId, content, sent_at AS sentAt, source,
               humor_score AS humorScore, interest_score AS interestScore, times_played AS timesPlayed
        FROM quotes`
     )
@@ -25,4 +25,4 @@ function incrementTimesPlayed(quoteId) {
   bumpStmt.run(quoteId);
 }
 
-module.exports = { getAuthors, getCandidateQuotes, incrementTimesPlayed };
+module.exports = { getPeople, getCandidateQuotes, incrementTimesPlayed };

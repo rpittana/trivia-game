@@ -206,3 +206,83 @@ One page, four screens toggled by JS: **join → lobby → round → reveal/lead
 5. Polish: rejoin, host migration, auto-advance.
 
 Definition of done for v1: two browser tabs on localhost can create/join a room, play 15 rounds from a real export with no repeated quotes, and see a final leaderboard.
+
+---
+
+# V2 — People config, fair draws, better curation, iMessage source
+
+Four changes based on real play-testing. Implement in the order listed in §11.
+
+## 7. People config — who's in the game, across both sources
+
+Stop deriving the roster from message counts. A person is now the unit of identity, defined in `data/people.json` (gitignored):
+
+```jsonc
+{
+  "people": [
+    {
+      "name": "Roman",                    // display name shown in the game
+      "include": true,
+      "discordIds": ["296394839820599298"],
+      "imessageHandles": ["+15551234567"] // phone/email handles; "me" = the backup owner (isFromMe rows)
+    }
+  ]
+}
+```
+
+- `node ingest/ingest.js --init-config <exports...>`: scans exports and writes a **skeleton** `people.json` — one entry per discovered Discord author with their id, display name, and surviving-message count, all `include: true`. Never overwrites an existing file (print a diff-style summary of newly discovered ids instead, and add them with `include: false`).
+- The user edits the file by hand: flips `include: false` for the old dead account, merges duplicate accounts into one person, fills in `imessageHandles` later.
+- Ingest drops all messages from non-included / unknown authors **before** scoring. No scrubbing of the raw export — it stays untouched; exclusion happens in the pipeline. The old ≥20-message auto-threshold is **removed** (superseded by explicit config; keep a warning when an included person has < 20 surviving quotes).
+- DB schema: rename `authors` → `people (id INTEGER PK, name TEXT)`; `quotes.person_id` references it; add `quotes.source TEXT` (`'discord' | 'imessage'`). Ingest resolves every message's author/handle to a person via this config. The game's answer choices are included people.
+
+## 8. Equal representation in quote draws
+
+Problem: chatty friends dominate; quiet friends barely appear, and players can meta-game "when in doubt, guess the loud one."
+
+Replace the per-author cap in `drawQuotes` with a **stratified draw**:
+
+1. Let P = included people who have ≥ 1 candidate quote in the selected pool. Allocate `floor(N / P)` slots per person; distribute the remainder one-each to people chosen at random.
+2. Fill each person's slots from *their own* quotes using the existing score × play-decay × jitter weighting.
+3. If someone has too few quotes to fill their slots, redistribute the shortfall across the others (round-robin by weight).
+4. Shuffle the final play order. No-repeat-within-game still holds by construction.
+
+Unit-test: 3 people with 100/10/3 candidate quotes, N=15 → allocation is 5/5/3 with the shortfall redistributed (6/6/3), never 12/2/1.
+
+## 9. Better humor curation (the quotes suck out of context)
+
+The single "rate 0–10" prompt over-scores mundane conversation. Replace with a **two-stage LLM pass**, both stages cached in `llm_cache` keyed by `(message_id, model, prompt_version)` — bump `prompt_version` whenever a prompt string changes so stale ratings re-run:
+
+- **Stage A — standalone gate (cheap, run on top ~2000 by heuristic pre-score):** ask: *"You see this chat message with NO other context. Does it make complete sense on its own — no missing references to earlier conversation ('that', 'he', 'it' with unclear referents), no logistics ('you coming?', 'what time'), not an answer to an unseen question? Reply YES or NO only."* Drop NOs (score 0, cached).
+- **Stage B — funniness rating (run on Stage-A survivors):** describe the game in the prompt: *"We show this message to friends who must guess which group member said it. Rate 0–10 how funny/entertaining it is as a standalone quote. Favor: one-liners, unhinged outbursts, absurd declarations, strong opinions stated with conviction. Score 0–2: mundane conversation, questions, plans, generic reactions. Reply with only the number."* Include 3–4 few-shot examples **invented by you, generic** (never taken from the user's chat) showing a 9 (absurd outburst), a 6, and two 1s (logistics, context-dependent fragment).
+- Blend shifts to LLM-dominant: `humor_score = 0.15 * heuristic_percentile + 0.85 * llm * 10`. Stage-A failures get `humor_score = min(heuristic_percentile, 20)` so they can still appear in the `interesting`/`mixed` pools but never lead `funny`.
+- Add `--preview 30` flag: after scoring, print the top 30 by humor_score to the terminal for the user to eyeball (user reviews it themselves — the implementing agent should not read this output beyond confirming the command exited 0).
+- If quality is still poor after this, the lever is the model, not more prompt surgery: try `qwen2.5:7b-instruct` or `llama3.1:8b` via the existing `--model` flag (one `ollama pull` away). Keep `llama3:latest` the working default.
+
+## 10. iMessage group chat as a second quote source
+
+**Source located (2026-07-15):** iPhone backup at `C:\Users\Roman\Apple\MobileSync\Backup\00008150-001845C60285401C\`, containing the Messages database at hashed path `3d\3d0d7e5fb2ce288813306e4d4636395e047a3d28` (this is `sms.db`, ~100 MB, backup dated 2026-05-05).
+
+New adapter `ingest/imessage.js`, sharing the filter/score/LLM pipeline with Discord (refactor shared logic into `ingest/common.js`; `ingest/ingest.js` becomes the Discord adapter + CLI entry that can take both sources).
+
+Steps:
+
+1. **Copy, never touch the backup:** copy the hashed file to `data/sms.db` (read-only source). If it fails to open as SQLite, the backup is **encrypted** — stop and tell the user they need an unencrypted backup (uncheck "Encrypt local backup" in Apple Devices/iTunes and re-sync) or a licensed extractor. Do not attempt decryption.
+2. **`--list-chats`:** print group chats only — `chat.ROWID`, display name if set, participant handles, message count. **Names/handles/counts only, never message text.** The user picks the right chat id and puts it in `people.json` → `"imessageChatId": <ROWID>` (top-level key).
+3. **Extract:** for that chat id, join `chat_message_join` → `message` → `handle`. Map each row to the common internal format:
+   - id: `imsg-<message.guid>`; author: `handle.id` (phone/email), or the person whose handles contain `"me"` when `message.is_from_me = 1`.
+   - timestamp: `message.date` is Apple epoch (seconds — or **nanoseconds** on newer iOS — since 2001-01-01 UTC; detect by magnitude, > 1e12 means ns).
+   - text: `message.text`, but on newer iOS the text often lives only in the `attributedBody` blob (typedstream). Implement the known minimal extraction (scan the blob for the NSString payload); skip rows where neither yields text, and **report the skip count** so the user knows if a large share was lost.
+   - **Tapbacks are the reaction signal:** rows with `associated_message_type` 2000–2005 are reactions to another message, not quotes — exclude them as quotes, but count them toward the target message's score. `2003` = "Ha Ha" → weight like a laugh reaction (strong). Others → weight like a generic reaction.
+4. **Shared pipeline:** same filters (URL/length/self-identifying — name filter now uses people.json names + all known handles), same reply-burst heuristic, same two-stage LLM pass. Insert with `source = 'imessage'`.
+5. Unmatched handles found in the chat: print them (handle string + count only) and skip their messages until the user assigns them to a person in `people.json`.
+
+Privacy rules unchanged and extended: `data/` stays gitignored and unservable; sms.db and all message content never leave the machine; scripts print only names, handles, counts, and the user-facing `--preview` list.
+
+## 11. V2 implementation order
+
+1. §7 people config + `--init-config` + DB schema migration (drop/recreate quotes.db is fine — it's derived data; `llm_cache` must survive, it's keyed by message id).
+2. §8 stratified draw + unit tests (this is pure `game.js`/draw logic — shippable immediately).
+3. §9 two-stage LLM pass + `--preview`; re-run ingest; user eyeballs top-30.
+4. §10 iMessage adapter (`--list-chats` first, get the chat id from the user, then extraction), re-run full ingest with both sources.
+
+Definition of done for v2: `people.json` controls exactly who appears; a 15-round game gives every included person a near-equal number of quotes; the `funny` pool's top quotes read as standalone one-liners; quotes from both Discord and iMessage appear in one game under each person's single display name.
