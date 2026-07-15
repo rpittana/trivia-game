@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "Bash(npm install *)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(node ingest/ingest.js \"data/Direct Messages - Danklin's Room [296394839820599298].json\" --model=llama3:latest --candidates=50)"
+    ]
+  }
+}

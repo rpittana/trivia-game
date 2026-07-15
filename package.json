@@ -1,0 +1,17 @@
+{
+  "name": "discord-trivia",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private, self-hosted 'who said it' trivia game built from a Discord export.",
+  "type": "commonjs",
+  "scripts": {
+    "ingest": "node ingest/ingest.js",
+    "start": "node server/server.js",
+    "test": "node --test server/game.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}
