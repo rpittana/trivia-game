@@ -26,7 +26,12 @@
       "Bash(node -c ingest/imessage.js)",
       "Bash(node ingest/ingest.js --list-chats)",
       "Bash(node -c ingest/ingest.js)",
-      "Bash(node ingest/ingest.js --show-chat=195)"
+      "Bash(node ingest/ingest.js --show-chat=195)",
+      "Bash(node ingest/export-top-quotes.js 50)",
+      "Bash(node -c ingest/common.js)",
+      "Bash(node ingest/diag-temp.js)",
+      "Bash(ollama pull *)",
+      "Bash(node ingest/ingest.js \"data/Direct Messages - Danklin's Room [296394839820599298].json\" --model=qwen2.5:7b-instruct --preview=50)"
     ]
   }
 }
