@@ -9,7 +9,11 @@
       "Bash(node -c server/server.js)",
       "Bash(node -c server/game.js)",
       "Bash(node -c server/db.js)",
-      "Bash(ls -1t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -60 | wc -l)"
+      "Bash(ls -1t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -60 | wc -l)",
+      "Bash(curl -sD - -o /dev/null http://localhost:3000/app.js)",
+      "Bash(curl -sD - -o /dev/null http://localhost:3000/)",
+      "Bash(netstat -ano)",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")"
     ]
   }
 }

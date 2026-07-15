@@ -30,6 +30,11 @@ function persistedName() {
 // ---------- Join screen ----------
 
 document.getElementById("join-name").value = persistedName();
+document.getElementById("join-name").focus();
+
+for (const id of ["join-name", "join-code"]) {
+  document.getElementById(id).addEventListener("input", (e) => e.target.classList.remove("input-error"));
+}
 
 document.getElementById("btn-create").addEventListener("click", () => {
   const name = document.getElementById("join-name").value.trim();
@@ -45,7 +50,7 @@ document.getElementById("btn-join").addEventListener("click", () => {
   const name = document.getElementById("join-name").value.trim();
   const roomCode = document.getElementById("join-code").value.trim().toUpperCase();
   if (!name) return showJoinError("Enter your name first.");
-  if (!roomCode) return showJoinError("Enter a room code.");
+  if (!roomCode) return showJoinError("Enter a room code.", "join-code");
   sessionStorage.setItem("trivia_name", name);
   socket.emit("room:join", { roomCode, name }, (res) => {
     if (res.error) return showJoinError(res.error);
@@ -53,8 +58,16 @@ document.getElementById("btn-join").addEventListener("click", () => {
   });
 });
 
-function showJoinError(msg) {
-  document.getElementById("join-error").textContent = msg;
+function showJoinError(msg, fieldId = "join-name") {
+  const errorEl = document.getElementById("join-error");
+  errorEl.textContent = msg;
+  const field = document.getElementById(fieldId);
+  field.classList.remove("shake");
+  field.classList.add("input-error");
+  // eslint-disable-next-line no-unused-expressions
+  field.offsetWidth; // restart the animation on repeated errors
+  field.classList.add("shake");
+  field.focus();
 }
 
 function onJoined({ roomCode, playerId }) {

@@ -40,7 +40,17 @@ h1 { margin: 0 0 0.25rem; }
 h2 { margin: 0 0 0.5rem; }
 .subtitle { color: var(--muted); margin-top: 0; }
 .hidden { display: none !important; }
-.error { color: var(--incorrect); min-height: 1.2em; text-align: center; margin: 0.75rem 0 0; font-size: 0.9rem; }
+.error { color: var(--incorrect); min-height: 1.2em; text-align: center; margin: 0.75rem 0 0; font-size: 0.95rem; font-weight: 600; }
+
+.input-error { border-color: var(--incorrect) !important; box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.25) !important; }
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+.shake { animation: shake 0.4s ease; }
 
 label {
   display: block;
