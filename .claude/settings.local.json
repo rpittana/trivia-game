@@ -4,7 +4,12 @@
       "Bash(node -e ' *)",
       "Bash(npm install *)",
       "Bash(curl -s http://localhost:11434/api/tags)",
-      "Bash(node ingest/ingest.js \"data/Direct Messages - Danklin's Room [296394839820599298].json\" --model=llama3:latest --candidates=50)"
+      "Bash(node ingest/ingest.js \"data/Direct Messages - Danklin's Room [296394839820599298].json\" --model=llama3:latest --candidates=50)",
+      "Bash(node --test server/game.test.js)",
+      "Bash(node -c server/server.js)",
+      "Bash(node -c server/game.js)",
+      "Bash(node -c server/db.js)",
+      "Bash(ls -1t ~/.claude/projects/*/*.jsonl 2>/dev/null | head -60 | wc -l)"
     ]
   }
 }

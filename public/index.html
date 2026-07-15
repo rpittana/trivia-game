@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Who Said It?</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="screen-join" class="screen active">
+      <h1>Who Said It?</h1>
+      <p class="subtitle">Guess who sent the message.</p>
+      <label>Your name
+        <input id="join-name" type="text" maxlength="32" placeholder="Riley" autocomplete="off" />
+      </label>
+      <div class="join-actions">
+        <button id="btn-create">Create a room</button>
+        <div class="join-row">
+          <input id="join-code" type="text" maxlength="4" placeholder="ROOM CODE" autocomplete="off" />
+          <button id="btn-join">Join</button>
+        </div>
+      </div>
+      <p id="join-error" class="error"></p>
+    </section>
+
+    <section id="screen-lobby" class="screen">
+      <h2>Room <span id="lobby-code"></span></h2>
+      <ul id="lobby-players"></ul>
+      <div id="host-controls" class="hidden">
+        <label>Rounds
+          <input id="opt-rounds" type="number" min="3" max="50" value="15" />
+        </label>
+        <label>Seconds per round
+          <input id="opt-seconds" type="number" min="5" max="60" value="20" />
+        </label>
+        <label>Quote pool
+          <select id="opt-pool">
+            <option value="mixed" selected>Mixed</option>
+            <option value="funny">Funniest</option>
+            <option value="interesting">Most interesting</option>
+          </select>
+        </label>
+        <button id="btn-start">Start game</button>
+      </div>
+      <p id="lobby-waiting" class="subtitle">Waiting for the host to start...</p>
+    </section>
+
+    <section id="screen-round" class="screen">
+      <div class="round-header">
+        <span id="round-count"></span>
+        <div id="round-timer-bar"><div id="round-timer-fill"></div></div>
+        <span id="round-answered"></span>
+      </div>
+      <blockquote id="round-quote"></blockquote>
+      <div id="round-choices" class="choices"></div>
+    </section>
+
+    <section id="screen-reveal" class="screen">
+      <h2 id="reveal-heading"></h2>
+      <p id="reveal-date" class="subtitle"></p>
+      <ul id="reveal-guesses"></ul>
+      <h3>Scoreboard</h3>
+      <ol id="reveal-scores"></ol>
+      <button id="btn-next" class="hidden">Next round</button>
+      <p id="reveal-waiting" class="subtitle hidden">Waiting for host to continue...</p>
+    </section>
+
+    <section id="screen-gameover" class="screen">
+      <h2>Final scores</h2>
+      <ol id="final-scores"></ol>
+      <button id="btn-again" class="hidden">Play again</button>
+      <p id="gameover-waiting" class="subtitle hidden">Waiting for host...</p>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
