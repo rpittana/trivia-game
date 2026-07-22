@@ -297,3 +297,113 @@ Privacy rules unchanged and extended: `data/` stays gitignored and unservable; s
 4. §10 iMessage adapter (`--list-chats` first, get the chat id from the user, then extraction), re-run full ingest with both sources.
 
 Definition of done for v2: `people.json` controls exactly who appears; a 15-round game gives every included person a near-equal number of quotes; the `funny` pool's top quotes read as standalone one-liners; quotes from both Discord and iMessage appear in one game under each person's single display name.
+
+---
+
+# V3 — Presentation, feedback, and stats
+
+Seven features that make the game more fun and self-improving. **Read the existing socket contract in §3.4 and the current `server/server.js`, `server/game.js`, `server/db.js`, `public/app.js`, and `public/index.html` before starting** — every payload below extends the ones already there; do not invent parallel ones. Everything here is local-only (no new privacy surface): all data stays in `data/quotes.db` on the host, clients still only ever receive the current round's quote + display names/colors + aggregate stats, never the corpus.
+
+Implement in the order of §19. §12 is foundational — do it first, the rest depend on it.
+
+## 12. Persistence that survives re-ingest (foundational)
+
+Downvotes (§16) and guessability stats (§17) must NOT be wiped every time the user re-runs ingest. The pattern already exists: `llm_cache` is created `IF NOT EXISTS` and never dropped by `buildDatabase` in `ingest/common.js`, while `quotes` and `people` are `DROP`/recreated. Add two more never-dropped tables the same way, keyed by ids that are **stable across re-ingest**:
+
+```sql
+-- keyed by message id (survives re-ingest: same Discord/iMessage message keeps its id)
+CREATE TABLE IF NOT EXISTS quote_feedback (
+  message_id TEXT PRIMARY KEY,
+  downvotes INTEGER NOT NULL DEFAULT 0
+);
+-- keyed by person id from people.json (stable as long as the user doesn't renumber people)
+CREATE TABLE IF NOT EXISTS person_stats (
+  person_id INTEGER PRIMARY KEY,
+  quotes_shown  INTEGER NOT NULL DEFAULT 0,
+  total_guesses INTEGER NOT NULL DEFAULT 0,
+  correct_guesses INTEGER NOT NULL DEFAULT 0
+);
+```
+
+In `buildDatabase`, add both to the `CREATE TABLE IF NOT EXISTS` block, above the `DROP TABLE` lines. Never drop them. Everything in §16/§17 writes here.
+
+## 13. Per-person colors
+
+Give every person a stable color used everywhere their identity appears.
+
+- **Source of truth:** optional `"color": "#rrggbb"` per person in `data/people.json`. If absent, assign deterministically from a fixed palette by index (define an 8-color colorblind-friendly palette in `common.js`; `color = palette[personIndex % palette.length]`). `--init-config` should write a default `color` into each new skeleton entry so the user can tweak it.
+- **Plumb it through:** `db.getPeople()` returns `color`; `game.buildChoices` carries `color` onto each choice; the `round:start` `choices[]` entries gain `color`; add `color` to the reveal path so the client can color "It was ___".
+- **Client use (`app.js` + `style.css`):** choice buttons tinted with the person's color (colored left border or background at low opacity; keep text readable); the "It was X!" reveal heading in that color; the person's color as a dot next to their name wherever names are listed. Note the scoreboard lists *players* (people in the room), not *people* (quote authors) — colors apply to the quote-author identity (choices + reveal), not necessarily player rows.
+
+## 14. Quote stays visible on the reveal screen
+
+Right now `screen-reveal` shows "It was X!" but drops the quote itself. Keep the quote on screen through the reveal so players can react to it.
+
+- Client-only. On `round:start`, save the quote text to `state.currentQuoteContent`. Add a `#reveal-quote` element to `screen-reveal` in `index.html`; in the `round:reveal` handler, render `state.currentQuoteContent` into it (styled like `#round-quote`, the visual centerpiece). No server or payload change needed.
+
+## 15. Year toggle (show-year hint)
+
+A per-game host toggle, off by default: when on, the round display shows the year the quote was sent (just the year, e.g. "2021") alongside the quote text, as a timing hint for guessers. Not a filter — the draw pool is unaffected either way.
+
+- **Server:** extend `game:start` settings with `showYear: boolean` (default `false`), stored on `game.settings` in `game.startGame` alongside `rounds`/`roundSeconds`/`pool`. In `server.js`'s `emitRoundStart`, when `g.settings.showYear` is true, include the year in the `round:start` payload: `quote: { content, year: new Date(round.quote.sentAt).getFullYear() }`; when false, omit `year` entirely (`quote: { content }` as today) — this must stay server-controlled so a client can't see the year by inspecting network traffic when the host has it off. The full `sentAt` continues to be revealed only at `round:reveal`, unchanged.
+- **Client:** a checkbox in the lobby host controls, "Show year during round (hint)"; included in the `game:start` emit. In the `round:start` handler, if `quote.year` is present, render it as a small badge near `#round-quote` (e.g. `#round-year`); hide/clear it when absent.
+
+## 16. Downvoting bad quotes
+
+Players flag quotes that don't work; enough downvotes removes a quote from future draws. Self-cleaning corpus.
+
+- **New socket event** `quote:downvote` (client→server), payload `{}` — it always refers to the room's current round quote (server looks up `g.currentRound.quote.id`; ignore if not in reveal/round state). Any player may vote once per quote per round; track voters in the round object to prevent double-count.
+- **Server/db:** `db.downvoteQuote(messageId)` → `INSERT INTO quote_feedback(message_id, downvotes) VALUES(?,1) ON CONFLICT(message_id) DO UPDATE SET downvotes = downvotes + 1`. Broadcast `quote:downvoted` `{ count }` so the client can show the tally live.
+- **Draw exclusion:** `db.getCandidateQuotes()` LEFT JOINs `quote_feedback` and returns `downvotes`; in `game.drawQuotes`, drop any quote with `downvotes >= 3` from the candidate set before allocating (a module-level `DOWNVOTE_HIDE_THRESHOLD = 3`). Add a unit test: a quote at the threshold is never drawn.
+- **Client:** a small "👎 bad quote" button on the reveal screen; disables after the local player clicks; shows the running count from `quote:downvoted`.
+
+## 17. Guessability / predictability (global stat)
+
+Across all games ever played on this install, track how often each person's quotes get guessed correctly — the higher, the more predictable. A persistent global leaderboard.
+
+- **Record on every reveal (`server.js` `doReveal` / after `game.revealRound`):** for the round's quote author `personId`, call `db.recordReveal(personId, totalGuesses, correctGuesses)` where `totalGuesses` = number of players who answered and `correctGuesses` = how many were right (both derivable from the `guesses[]` the reveal already computes). Updates `person_stats`: `quotes_shown += 1`, `total_guesses += totalGuesses`, `correct_guesses += correctGuesses`.
+- **db.getGuessability()** → `[{ personId, name, pct, sample }]` where `pct = correct_guesses / total_guesses * 100`, `sample = total_guesses`. Exclude people with `sample < 10` (label them "not enough data" client-side rather than ranking noise).
+- **Expose:** include `guessability` in the `game:over` payload (sorted most-predictable first). Client renders a "Predictability Board" on the game-over screen: e.g. "🔮 Most predictable: Talon — 74% guessed right" down to "🎭 Most mysterious: Bryce — 31%". This is cumulative across games, so it grows more meaningful over time; make that clear in the UI ("all-time, N guesses").
+
+## 18. Sound effects
+
+Client-only, **zero asset files** — synthesize with the Web Audio API in a new `public/sound.js` (no external URLs, keeps the offline/no-CDN rule). Provide short synthesized cues:
+- new round starts, answer locked in (soft click), you-got-it-right (rising chime) vs wrong (low buzz) on reveal, countdown tick for the final 5 seconds, game-over fanfare.
+- A mute toggle in the top corner, state persisted in `localStorage`. Respect browser autoplay policy: create/resume the `AudioContext` on the first user gesture (the create/join click).
+
+### 18a. `game:meta` event (supporting §13)
+
+Add a server→client `game:meta` emitted right after a socket joins a room (in `room:create`/`room:join` handlers), payload `{ people: [{id, name, color}] }` (from `db.getPeople()`). The client caches it for color lookups (§13). Keeps colors out of the per-round payloads where they don't belong.
+
+## 19. More visual effects
+
+Client + CSS only, building on the existing screen system and `style.css` variables:
+- Confetti burst on a correct answer and on the game-over winner — self-contained canvas or DOM particles, no libraries.
+- Animated screen transitions (fade/slide between join→lobby→round→reveal).
+- Timer bar turns amber then red and pulses in the final 5 seconds (pairs with the §18 tick).
+- Correct/wrong full-card flash on reveal; count-up animation on score changes; a crown/glow on the winner at game-over.
+- Keep it tasteful and performant on phones; use `prefers-reduced-motion` to tone down for anyone who sets it.
+
+## 20. V3 socket contract additions & implementation order
+
+New/changed events (extend §3.4, don't replace):
+
+| direction | event | payload |
+|---|---|---|
+| S→C | `game:meta` | `{ people: [{id, name, color}] }` |
+| C→S | `game:start` | now also `{ showYear: boolean }` |
+| S→C | `round:start` | `choices[]` entries now also carry `color`; `quote` gains `year` (only present when `showYear` is on) |
+| C→S | `quote:downvote` | `{}` (refers to current round quote) |
+| S→C | `quote:downvoted` | `{ count }` |
+| S→C | `game:over` | now also `{ guessability: [{personId, name, pct, sample}] }` |
+
+Order:
+1. §12 persistence tables (in `ingest/common.js` `buildDatabase`) + the `db.js` accessors the rest need. Re-run ingest once to create the tables (existing scores/cache untouched).
+2. §13 colors + §18a `game:meta` (they share the plumbing).
+3. §14 quote-on-reveal (pure client, quick win).
+4. §16 downvoting + unit test for the draw threshold.
+5. §17 guessability recording + game-over board.
+6. §15 year filter.
+7. §18 sound + §19 visual effects last (pure presentation, iterate with the user).
+
+Definition of done for v3: each person shows in a consistent color; the quote stays visible on reveal; players can downvote a quote and after 3 downvotes it stops appearing; the game-over screen shows an all-time predictability board that persists across re-ingest; the host can restrict a game to chosen years; sounds and effects fire on the key moments with a working mute and `prefers-reduced-motion` respected.

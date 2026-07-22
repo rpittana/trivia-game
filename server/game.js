@@ -4,6 +4,7 @@
 
 const REJOIN_GRACE_MS = 60 * 1000;
 const MAX_CHOICES = 8;
+const DOWNVOTE_HIDE_THRESHOLD = 3;
 
 function scoreFor(quote, pool) {
   if (pool === "funny") return quote.humorScore;
@@ -22,6 +23,7 @@ function scoreFor(quote, pool) {
  * at the end; no-repeat-within-game holds by construction.
  */
 function drawQuotes(candidates, count, pool, rng = Math.random) {
+  candidates = candidates.filter((c) => (c.downvotes || 0) < DOWNVOTE_HIDE_THRESHOLD);
   if (candidates.length === 0) return [];
 
   const byPerson = new Map();
@@ -175,11 +177,12 @@ function startGame(game, hostId, settings, candidateQuotes, people, rng = Math.r
   const rounds = settings.rounds || 15;
   const roundSeconds = settings.roundSeconds || 20;
   const pool = settings.pool || "mixed";
+  const showYear = !!settings.showYear;
 
   const quotes = drawQuotes(candidateQuotes, rounds, pool, rng);
   if (quotes.length === 0) throw new GameError("No quotes available to play.");
 
-  game.settings = { rounds: quotes.length, roundSeconds, pool };
+  game.settings = { rounds: quotes.length, roundSeconds, pool, showYear };
   game.quotes = quotes;
   game.people = people;
   game.status = "in-progress";
@@ -203,9 +206,19 @@ function startNextRound(game, rng = Math.random, now = Date.now()) {
     choices,
     endsAt: now + game.settings.roundSeconds * 1000,
     answers: new Map(), // playerId -> { personId, answeredAt }
+    downvoters: new Set(), // playerIds who've downvoted this round's quote
   };
   game.status = "in-progress";
   return game.currentRound;
+}
+
+/** Records a downvote from `playerId` for the current round's quote. Returns false if they already voted this round. */
+function downvoteCurrentQuote(game, playerId) {
+  if (!game.currentRound) throw new GameError("No round is currently active.");
+  if (!game.players.has(playerId)) throw new GameError("Unknown player.");
+  if (game.currentRound.downvoters.has(playerId)) return false;
+  game.currentRound.downvoters.add(playerId);
+  return true;
 }
 
 function submitAnswer(game, playerId, personId, now = Date.now()) {
@@ -306,5 +319,7 @@ module.exports = {
   playAgain,
   drawQuotes,
   buildChoices,
+  downvoteCurrentQuote,
   REJOIN_GRACE_MS,
+  DOWNVOTE_HIDE_THRESHOLD,
 };

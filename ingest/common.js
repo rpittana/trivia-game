@@ -18,6 +18,13 @@ const COMMAND_PREFIX_RE = /^[!/.\-]\w/;
 const MENTION_RE = /<@!?(\d+)>/g;
 const CUSTOM_EMOJI_RE = /<a?:(\w+):\d+>/g;
 
+// Okabe-Ito colorblind-safe palette, last swapped for a mid-gray (pure black disappears on the dark UI).
+const COLOR_PALETTE = ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#999999"];
+
+function colorForPersonId(id) {
+  return COLOR_PALETTE[(id - 1) % COLOR_PALETTE.length];
+}
+
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -70,7 +77,7 @@ function loadPeopleConfig() {
 
   for (const person of people) {
     if (!person.include) continue;
-    includedPeople.push({ id: person.id, name: person.name });
+    includedPeople.push({ id: person.id, name: person.name, color: person.color || colorForPersonId(person.id) });
     for (const id of person.discordIds || []) byDiscordId.set(id, person.id);
     for (const handle of person.imessageHandles || []) byImessageHandle.set(handle, person.id);
     if (person.name && person.name.trim().length >= 2) {
@@ -105,6 +112,7 @@ function initOrUpdatePeopleConfig(discovered) {
       include: true,
       discordIds: [d.discordId],
       imessageHandles: [],
+      color: colorForPersonId(i + 1),
       messageCount: d.survivingCount,
     }));
     fs.writeFileSync(configPath, JSON.stringify({ people }, null, 2) + "\n");
@@ -128,13 +136,15 @@ function initOrUpdatePeopleConfig(discovered) {
   let id = nextId;
   for (const d of newOnes) {
     people.push({
-      id: id++,
+      id,
       name: d.name,
       include: false,
       discordIds: [d.discordId],
       imessageHandles: [],
+      color: colorForPersonId(id),
       messageCount: d.survivingCount,
     });
+    id++;
   }
   fs.writeFileSync(configPath, JSON.stringify({ ...raw, people }, null, 2) + "\n");
   console.log(`data/people.json already exists. Found ${newOnes.length} new Discord author(s), added as include:false:`);
@@ -434,11 +444,23 @@ function buildDatabase(dbPath, people, kept) {
       rated_at TEXT NOT NULL,
       PRIMARY KEY (message_id, model, prompt_version, stage)
     );
+    -- Never dropped: downvotes and guessability stats must survive re-ingest.
+    CREATE TABLE IF NOT EXISTS quote_feedback (
+      message_id TEXT PRIMARY KEY,
+      downvotes INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS person_stats (
+      person_id INTEGER PRIMARY KEY,
+      quotes_shown INTEGER NOT NULL DEFAULT 0,
+      total_guesses INTEGER NOT NULL DEFAULT 0,
+      correct_guesses INTEGER NOT NULL DEFAULT 0
+    );
     DROP TABLE IF EXISTS quotes;
     DROP TABLE IF EXISTS people;
     CREATE TABLE people (
       id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      color TEXT NOT NULL
     );
     CREATE TABLE quotes (
       id TEXT PRIMARY KEY,
@@ -452,13 +474,13 @@ function buildDatabase(dbPath, people, kept) {
     );
   `);
 
-  const insertPerson = db.prepare("INSERT INTO people (id, name) VALUES (?, ?)");
+  const insertPerson = db.prepare("INSERT INTO people (id, name, color) VALUES (?, ?, ?)");
   const insertQuote = db.prepare(
     "INSERT INTO quotes (id, person_id, content, sent_at, source, humor_score, interest_score) VALUES (?, ?, ?, ?, ?, ?, ?)"
   );
 
   const insertAll = db.transaction(() => {
-    for (const p of people) insertPerson.run(p.id, p.name);
+    for (const p of people) insertPerson.run(p.id, p.name, p.color || colorForPersonId(p.id));
     for (const q of kept) insertQuote.run(q.id, q.personId, q.content, q.sentAt, q.source, q.humorScore, q.interestScore);
   });
   insertAll();
@@ -486,6 +508,8 @@ function printPreview(kept, n, peopleById) {
 module.exports = {
   PROMPT_VERSION,
   LAUGH_RE,
+  COLOR_PALETTE,
+  colorForPersonId,
   escapeRegExp,
   normalizeContent,
   nonAlphaRatio,

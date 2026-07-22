@@ -72,6 +72,20 @@ test("drawQuotes never gives a 12/2/1-style lopsided draw", () => {
   assert.ok(counts.get("quiet-friend") >= 3);
 });
 
+test("drawQuotes excludes quotes at or above the downvote threshold", () => {
+  const candidates = [
+    mkQuote("bad1", "p1", { downvotes: game.DOWNVOTE_HIDE_THRESHOLD }),
+    mkQuote("bad2", "p1", { downvotes: game.DOWNVOTE_HIDE_THRESHOLD + 5 }),
+    mkQuote("ok1", "p1", { downvotes: game.DOWNVOTE_HIDE_THRESHOLD - 1 }),
+    mkQuote("ok2", "p1", { downvotes: 0 }),
+  ];
+  const drawn = game.drawQuotes(candidates, 4, "mixed", seededRng(3));
+  const ids = drawn.map((q) => q.id);
+  assert.ok(!ids.includes("bad1"));
+  assert.ok(!ids.includes("bad2"));
+  assert.equal(ids.length, 2);
+});
+
 test("drawQuotes returns no duplicate quote ids", () => {
   const candidates = [];
   for (let i = 0; i < 30; i++) candidates.push(mkQuote(`q${i}`, `person${i % 4}`));
@@ -155,6 +169,21 @@ test("scoring: correct answer awards 100 + speed bonus, wrong answer awards 0", 
   assert.equal(byPlayer.absent.correct, false);
   assert.equal(byPlayer.absent.points, 0);
   assert.ok(byPlayer.fast.points > byPlayer.slow.points, "faster answer should score more");
+});
+
+test("downvoteCurrentQuote counts once per player per round", () => {
+  const g = game.createGame("ABCD", "host1", "Host");
+  game.addPlayer(g, "p2", "Player Two");
+  const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, people, seededRng(4), 0);
+
+  const first = game.downvoteCurrentQuote(g, "p2");
+  const second = game.downvoteCurrentQuote(g, "p2");
+  const third = game.downvoteCurrentQuote(g, "host1");
+  assert.equal(first, true);
+  assert.equal(second, false, "same player voting twice should not count again");
+  assert.equal(third, true, "a different player can still vote");
 });
 
 test("buildChoices always includes the correct person exactly once", () => {

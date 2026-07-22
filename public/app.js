@@ -9,6 +9,7 @@ const state = {
   players: [],
   lastChoices: [],
   answered: false,
+  people: new Map(), // personId -> { name, color }, from game:meta
 };
 
 const screens = {
@@ -27,6 +28,19 @@ function persistedName() {
   return sessionStorage.getItem("trivia_name") || "";
 }
 
+// ---------- Sound mute toggle ----------
+
+const muteBtn = document.getElementById("btn-mute");
+function updateMuteIcon() {
+  muteBtn.textContent = window.Sound && window.Sound.isMuted() ? "🔇" : "🔊";
+}
+updateMuteIcon();
+muteBtn.addEventListener("click", () => {
+  if (!window.Sound) return;
+  window.Sound.setMuted(!window.Sound.isMuted());
+  updateMuteIcon();
+});
+
 // ---------- Join screen ----------
 
 document.getElementById("join-name").value = persistedName();
@@ -37,6 +51,7 @@ for (const id of ["join-name", "join-code"]) {
 }
 
 document.getElementById("btn-create").addEventListener("click", () => {
+  if (window.Sound) window.Sound.unlock(); // first user gesture — browsers block audio before this
   const name = document.getElementById("join-name").value.trim();
   if (!name) return showJoinError("Enter your name first.");
   sessionStorage.setItem("trivia_name", name);
@@ -47,6 +62,7 @@ document.getElementById("btn-create").addEventListener("click", () => {
 });
 
 document.getElementById("btn-join").addEventListener("click", () => {
+  if (window.Sound) window.Sound.unlock();
   const name = document.getElementById("join-name").value.trim();
   const roomCode = document.getElementById("join-code").value.trim().toUpperCase();
   if (!name) return showJoinError("Enter your name first.");
@@ -80,6 +96,17 @@ function onJoined({ roomCode, playerId }) {
 
 // ---------- Lobby ----------
 
+socket.on("game:meta", ({ people }) => {
+  state.people = new Map(people.map((p) => [p.id, { name: p.name, color: p.color }]));
+  const legend = document.getElementById("lobby-color-legend");
+  legend.innerHTML = "";
+  for (const p of people) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="color-dot" style="background:${p.color}"></span>${p.name}`;
+    legend.appendChild(li);
+  }
+});
+
 socket.on("lobby:update", ({ players }) => {
   state.players = players;
   const me = players.find((p) => p.id === state.playerId);
@@ -101,7 +128,8 @@ document.getElementById("btn-start").addEventListener("click", () => {
   const rounds = parseInt(document.getElementById("opt-rounds").value, 10) || 15;
   const roundSeconds = parseInt(document.getElementById("opt-seconds").value, 10) || 20;
   const pool = document.getElementById("opt-pool").value;
-  socket.emit("game:start", { rounds, roundSeconds, pool });
+  const showYear = document.getElementById("opt-show-year").checked;
+  socket.emit("game:start", { rounds, roundSeconds, pool, showYear });
 });
 
 // ---------- Round ----------
@@ -111,11 +139,21 @@ let timerInterval = null;
 socket.on("round:start", ({ roundNumber, totalRounds, quote, choices, endsAt }) => {
   state.answered = false;
   state.lastChoices = choices;
+  state.currentQuoteContent = quote.content;
   showScreen("round");
+  if (window.Sound) window.Sound.roundStart();
 
   document.getElementById("round-count").textContent = `Round ${roundNumber} / ${totalRounds}`;
   document.getElementById("round-quote").textContent = quote.content;
   document.getElementById("round-answered").textContent = "";
+
+  const yearBadge = document.getElementById("round-year");
+  if (quote.year) {
+    yearBadge.textContent = quote.year;
+    yearBadge.classList.remove("hidden");
+  } else {
+    yearBadge.classList.add("hidden");
+  }
 
   const choicesEl = document.getElementById("round-choices");
   choicesEl.innerHTML = "";
@@ -123,9 +161,11 @@ socket.on("round:start", ({ roundNumber, totalRounds, quote, choices, endsAt }) 
     const btn = document.createElement("button");
     btn.textContent = choice.displayName;
     btn.className = "choice-btn";
+    btn.style.setProperty("--choice-color", choice.color);
     btn.addEventListener("click", () => {
       if (state.answered) return;
       state.answered = true;
+      if (window.Sound) window.Sound.locked();
       socket.emit("round:answer", { personId: choice.personId });
       for (const b of choicesEl.querySelectorAll("button")) b.disabled = true;
       btn.classList.add("selected");
@@ -135,10 +175,20 @@ socket.on("round:start", ({ roundNumber, totalRounds, quote, choices, endsAt }) 
 
   clearInterval(timerInterval);
   const fill = document.getElementById("round-timer-fill");
+  fill.classList.remove("timer-warning", "timer-danger");
+  fill.style.width = "100%";
   const totalMs = endsAt - Date.now();
+  let lastTickSecond = null;
   timerInterval = setInterval(() => {
     const remaining = Math.max(0, endsAt - Date.now());
     fill.style.width = `${(remaining / totalMs) * 100}%`;
+    fill.classList.toggle("timer-warning", remaining > 2000 && remaining <= 5000);
+    fill.classList.toggle("timer-danger", remaining > 0 && remaining <= 2000);
+    const wholeSecLeft = Math.ceil(remaining / 1000);
+    if (remaining > 0 && remaining <= 5000 && wholeSecLeft !== lastTickSecond) {
+      lastTickSecond = wholeSecLeft;
+      if (window.Sound) window.Sound.tick();
+    }
     if (remaining <= 0) clearInterval(timerInterval);
   }, 100);
 });
@@ -155,7 +205,10 @@ socket.on("round:reveal", ({ correctPersonId, sentAt, guesses, scores }) => {
 
   const correctChoice = state.lastChoices.find((c) => c.personId === correctPersonId);
   const correctName = correctChoice ? correctChoice.displayName : "someone";
-  document.getElementById("reveal-heading").textContent = `It was ${correctName}!`;
+  const headingEl = document.getElementById("reveal-heading");
+  headingEl.textContent = `It was ${correctName}!`;
+  headingEl.style.color = correctChoice ? correctChoice.color : "";
+  document.getElementById("reveal-quote").textContent = state.currentQuoteContent || "";
   document.getElementById("reveal-date").textContent = sentAt
     ? `Sent ${new Date(sentAt).toLocaleDateString(undefined, { year: "numeric", month: "long" })}`
     : "";
@@ -172,37 +225,95 @@ socket.on("round:reveal", ({ correctPersonId, sentAt, guesses, scores }) => {
     list.appendChild(li);
   }
 
-  renderScores("reveal-scores", [...scores].sort((a, b) => b.score - a.score));
+  renderScores("reveal-scores", [...scores].sort((a, b) => b.score - a.score), { animate: true });
 
   document.getElementById("btn-next").classList.toggle("hidden", !state.isHost);
   document.getElementById("reveal-waiting").classList.toggle("hidden", state.isHost);
+
+  const downvoteBtn = document.getElementById("btn-downvote");
+  downvoteBtn.disabled = false;
+  document.getElementById("downvote-count").textContent = "";
+
+  // Full-card flash + sound + confetti, based on whether I personally got it right.
+  const revealScreen = screens.reveal;
+  revealScreen.classList.remove("flash-correct", "flash-incorrect");
+  void revealScreen.offsetWidth; // restart the flash animation on repeated reveals
+  const myGuess = guesses.find((g) => g.playerId === state.playerId);
+  if (myGuess && myGuess.personId != null) {
+    if (myGuess.correct) {
+      revealScreen.classList.add("flash-correct");
+      if (window.Sound) window.Sound.correct();
+      if (window.Effects) window.Effects.confettiBurst();
+    } else {
+      revealScreen.classList.add("flash-incorrect");
+      if (window.Sound) window.Sound.wrong();
+    }
+  }
 });
 
 document.getElementById("btn-next").addEventListener("click", () => {
   socket.emit("round:next");
 });
 
+document.getElementById("btn-downvote").addEventListener("click", () => {
+  const btn = document.getElementById("btn-downvote");
+  btn.disabled = true;
+  socket.emit("quote:downvote");
+});
+
+socket.on("quote:downvoted", ({ count }) => {
+  document.getElementById("downvote-count").textContent = `(${count})`;
+});
+
 // ---------- Game over ----------
 
-socket.on("game:over", ({ finalScores }) => {
+socket.on("game:over", ({ finalScores, guessability }) => {
   showScreen("gameover");
-  renderScores("final-scores", finalScores);
+  renderScores("final-scores", finalScores, { animate: true, crownFirst: true });
+  renderPredictabilityBoard(guessability || []);
   document.getElementById("btn-again").classList.toggle("hidden", !state.isHost);
   document.getElementById("gameover-waiting").classList.toggle("hidden", state.isHost);
+  if (window.Sound) window.Sound.gameOver();
+  if (window.Effects) window.Effects.confettiBurst(70);
 });
+
+function renderPredictabilityBoard(guessability) {
+  const board = document.getElementById("predictability-board");
+  const list = document.getElementById("predictability-list");
+  board.classList.toggle("hidden", guessability.length === 0);
+  list.innerHTML = "";
+  guessability.forEach((entry, i) => {
+    const li = document.createElement("li");
+    const icon = i === 0 ? "🔮" : i === guessability.length - 1 ? "🎭" : "";
+    li.textContent = `${icon} ${entry.name} — ${entry.pct}% guessed right (${entry.sample} guesses)`.trim();
+    list.appendChild(li);
+  });
+}
 
 document.getElementById("btn-again").addEventListener("click", () => {
   socket.emit("game:again");
 });
 
-function renderScores(elId, scores) {
+const prevScores = new Map(); // playerId -> last-rendered score, for count-up animation
+
+function renderScores(elId, scores, { animate = false, crownFirst = false } = {}) {
   const el = document.getElementById(elId);
   el.innerHTML = "";
-  for (const s of scores) {
+  scores.forEach((s, i) => {
     const li = document.createElement("li");
-    li.textContent = `${s.name} — ${s.score}`;
+    if (crownFirst && i === 0) li.classList.add("winner");
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = `${crownFirst && i === 0 ? "👑 " : ""}${s.name} — `;
+    const scoreSpan = document.createElement("span");
+    li.appendChild(nameSpan);
+    li.appendChild(scoreSpan);
     el.appendChild(li);
-  }
+
+    const from = animate && prevScores.has(s.playerId) ? prevScores.get(s.playerId) : s.score;
+    if (window.Effects) window.Effects.countUp(scoreSpan, from, s.score);
+    else scoreSpan.textContent = s.score;
+    prevScores.set(s.playerId, s.score);
+  });
 }
 
 // ---------- Errors ----------

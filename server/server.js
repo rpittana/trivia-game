@@ -50,6 +50,12 @@ function clearTimers(roomCode) {
   t.advanceTimer = null;
 }
 
+function emitGameMeta(socket) {
+  socket.emit("game:meta", {
+    people: db.getPeople().map((p) => ({ id: p.id, name: p.displayName, color: p.color })),
+  });
+}
+
 function broadcastLobby(roomCode) {
   const g = rooms.get(roomCode);
   if (!g) return;
@@ -63,11 +69,13 @@ function broadcastLobby(roomCode) {
 
 function emitRoundStart(roomCode, round, roundNumber) {
   const g = rooms.get(roomCode);
+  const quote = { content: round.quote.content };
+  if (g.settings.showYear) quote.year = new Date(round.quote.sentAt).getFullYear();
   io.to(roomCode).emit("round:start", {
     roundNumber,
     totalRounds: g.settings.rounds,
-    quote: { content: round.quote.content },
-    choices: round.choices.map((p) => ({ personId: p.id, displayName: p.displayName })),
+    quote,
+    choices: round.choices.map((p) => ({ personId: p.id, displayName: p.displayName, color: p.color })),
     endsAt: round.endsAt,
   });
 }
@@ -90,6 +98,11 @@ function doReveal(roomCode) {
   clearTimers(roomCode);
   const payload = game.revealRound(g, Date.now());
   io.to(roomCode).emit("round:reveal", payload);
+
+  const totalGuesses = payload.guesses.filter((gs) => gs.personId != null).length;
+  const correctGuesses = payload.guesses.filter((gs) => gs.correct).length;
+  db.recordReveal(payload.correctPersonId, totalGuesses, correctGuesses);
+
   scheduleAutoAdvance(roomCode);
 }
 
@@ -109,7 +122,7 @@ function doAdvance(roomCode) {
 function handleRoundResult(roomCode, round) {
   const g = rooms.get(roomCode);
   if (round === null) {
-    io.to(roomCode).emit("game:over", { finalScores: game.finalScores(g) });
+    io.to(roomCode).emit("game:over", { finalScores: game.finalScores(g), guessability: db.getGuessability() });
     return;
   }
   db.incrementTimesPlayed(round.quote.id);
@@ -140,6 +153,7 @@ io.on("connection", (socket) => {
       socket.join(roomCode);
       ack && ack({ roomCode, playerId });
       broadcastLobby(roomCode);
+      emitGameMeta(socket);
     } catch (err) {
       ack && ack({ error: err.message });
     }
@@ -164,6 +178,7 @@ io.on("connection", (socket) => {
       socket.join(code);
       ack && ack({ roomCode: code, playerId });
       broadcastLobby(code);
+      emitGameMeta(socket);
     } catch (err) {
       ack && ack({ error: err.message });
     }
@@ -194,6 +209,21 @@ io.on("connection", (socket) => {
       if (accepted) {
         io.to(roomCode).emit("round:progress", { answeredPlayerIds: [...g.currentRound.answers.keys()] });
         if (game.allAnswered(g)) doReveal(roomCode);
+      }
+    } catch (err) {
+      socket.emit("error", { message: err.message });
+    }
+  });
+
+  socket.on("quote:downvote", () => {
+    const { roomCode, playerId } = socket.data;
+    const g = rooms.get(roomCode);
+    if (!g) return;
+    try {
+      const counted = game.downvoteCurrentQuote(g, playerId);
+      if (counted) {
+        const count = db.downvoteQuote(g.currentRound.quote.id);
+        io.to(roomCode).emit("quote:downvoted", { count });
       }
     } catch (err) {
       socket.emit("error", { message: err.message });

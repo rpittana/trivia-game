@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <button id="btn-mute" class="mute-toggle" aria-label="Mute sound">🔊</button>
   <main id="app">
     <section id="screen-join" class="screen active">
       <div class="join-card">
@@ -32,6 +33,7 @@
     <section id="screen-lobby" class="screen">
       <h2>Room <span id="lobby-code"></span></h2>
       <ul id="lobby-players"></ul>
+      <ul id="lobby-color-legend" class="color-legend"></ul>
       <div id="host-controls" class="hidden">
         <label>Rounds
           <input id="opt-rounds" type="number" min="3" max="50" value="15" />
@@ -46,6 +48,10 @@
             <option value="interesting">Most interesting</option>
           </select>
         </label>
+        <label class="checkbox-label">
+          <input id="opt-show-year" type="checkbox" />
+          Show year during round (hint)
+        </label>
         <button id="btn-start">Start game</button>
       </div>
       <p id="lobby-waiting" class="subtitle">Waiting for the host to start...</p>
@@ -58,12 +64,15 @@
         <span id="round-answered"></span>
       </div>
       <blockquote id="round-quote"></blockquote>
+      <span id="round-year" class="year-badge hidden"></span>
       <div id="round-choices" class="choices"></div>
     </section>
 
     <section id="screen-reveal" class="screen">
       <h2 id="reveal-heading"></h2>
+      <blockquote id="reveal-quote"></blockquote>
       <p id="reveal-date" class="subtitle"></p>
+      <button id="btn-downvote" class="btn-downvote">👎 Bad quote <span id="downvote-count"></span></button>
       <ul id="reveal-guesses"></ul>
       <h3>Scoreboard</h3>
       <ol id="reveal-scores"></ol>
@@ -74,12 +83,18 @@
     <section id="screen-gameover" class="screen">
       <h2>Final scores</h2>
       <ol id="final-scores"></ol>
+      <div id="predictability-board" class="predictability-board hidden">
+        <h3>Predictability Board <span class="subtitle">(all-time)</span></h3>
+        <ul id="predictability-list"></ul>
+      </div>
       <button id="btn-again" class="hidden">Play again</button>
       <p id="gameover-waiting" class="subtitle hidden">Waiting for host...</p>
     </section>
   </main>
 
   <script src="/socket.io/socket.io.js"></script>
+  <script src="sound.js"></script>
+  <script src="effects.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
