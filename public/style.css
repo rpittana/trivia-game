@@ -302,16 +302,22 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   flex-shrink: 0;
 }
 
-.btn-downvote {
+.vote-row {
+  display: flex;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.btn-vote {
   background: transparent;
   color: var(--muted);
   border: 1px solid var(--border);
   padding: 0.4rem 0.9rem;
   font-size: 0.85rem;
-  margin-bottom: 1rem;
 }
+.btn-vote:disabled { opacity: 0.6; }
 .btn-downvote:hover:not(:disabled) { border-color: var(--incorrect); color: var(--incorrect); }
-.btn-downvote:disabled { opacity: 0.6; }
+.btn-upvote:hover:not(:disabled) { border-color: var(--correct); color: var(--correct); }
 
 #reveal-guesses, #reveal-scores, #final-scores {
   list-style: none;
@@ -344,15 +350,18 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 }
 .predictability-board h3 { margin-bottom: 0.5rem; }
 .predictability-board .subtitle { font-size: 0.75rem; display: inline; margin-left: 0.35rem; }
-#predictability-list {
+#predictability-list, #this-game-list {
   list-style: none;
   padding: 0;
   margin: 0;
 }
-#predictability-list li {
+#predictability-list li, #this-game-list li {
   padding: 0.3rem 0;
   color: var(--muted);
   font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 @media (max-width: 480px) {

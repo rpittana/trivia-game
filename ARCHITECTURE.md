@@ -407,3 +407,59 @@ Order:
 7. §18 sound + §19 visual effects last (pure presentation, iterate with the user).
 
 Definition of done for v3: each person shows in a consistent color; the quote stays visible on reveal; players can downvote a quote and after 3 downvotes it stops appearing; the game-over screen shows an all-time predictability board that persists across re-ingest; the host can restrict a game to chosen years; sounds and effects fire on the key moments with a working mute and `prefers-reduced-motion` respected.
+
+---
+
+# V4 — Back-to-lobby flow, vote-driven curation, per-game predictability
+
+Three connected changes. **Read the current `server/server.js` (`doReveal`, `handleRoundResult`, the `game:again` handler), `server/game.js` (`playAgain`, `revealRound`, `downvoteCurrentQuote`), `public/app.js` (`game:over` handler, `renderPredictabilityBoard`), and `ingest/common.js` (`twoStageLlmRank` scoring, `buildDatabase`) before starting.** All local-only; no new privacy surface. Implement in the §24 order.
+
+## 21. Return to the lobby after a game (retain players, edit settings)
+
+**Today:** game ends → `game:over` → host clicks "Play again" (`game:again`) which reuses the *same* settings and jumps straight into round 1. **Wanted:** the game-over screen still shows (with final scores + the §23 stats), but the host's button sends everyone **back to the lobby** with all players still connected and the settings controls editable, so the host can change rounds / seconds / pool / year-hint before starting a fresh game.
+
+- **Server (`server.js`):** replace the `game:again` handler with a `game:to-lobby` handler (host-only). It calls a new `game.returnToLobby(game, requesterId)` (see below), then emits a **new** room event `game:lobby` (so clients switch screens deliberately — do NOT overload `lobby:update`, which also fires mid-lobby), then `broadcastLobby(roomCode)` and `emitGameMeta` is not needed again (colors already cached client-side). Clear any timers first.
+- **Game logic (`game.js`):** replace `playAgain` with `returnToLobby(game, requesterId)`: host-guard, require `status === "game-over"`, set `status = "lobby"`, reset `roundIndex = -1`, `quotes = []`, `currentRound = null`. **Keep `game.settings`** (so the lobby can prefill last-used values) and **keep `game.players`** (scores get zeroed at the next `startGame`, which already does `for (const p of game.players.values()) p.score = 0`). No quote draw happens here — the existing `game:start` path (status must be `"lobby"`, which now holds) does the fresh draw.
+- **Client (`app.js` + `index.html`):** rename the game-over button from "Play again" to "Back to lobby"; it emits `game:to-lobby`. Add a `game:lobby` handler that `showScreen("lobby")`. On returning, prefill the host settings inputs from the cached `game.settings` echoed in `lobby:update` (it already carries `settings`) so the host sees what they last used. Non-host players land on the lobby "waiting" view as normal.
+- Edge: if the host disconnects at game-over, host migration already promotes someone (existing `promoteHost`); the new host sees the lobby controls after `game:lobby`. No special handling needed.
+
+## 22. Downvotes (and a new upvote) feed the curation — honestly
+
+**Reality check to bake into the plan:** the local Ollama model's weights **cannot be fine-tuned by this app**, and we will **not** feed real voted messages into LLM prompts as few-shot examples — that would re-introduce the exact privacy problem from the v3 prompt incident (real chat text embedded in code/prompts). So "the AI trainer knows what's good and bad" is implemented as: **human votes become a persistent, first-class scoring signal that overrides the LLM's guess**, cumulatively, surviving every re-ingest. That is a genuine human-in-the-loop trainer; it just adjusts scores rather than model weights. State this clearly so expectations are right.
+
+- **Add an upvote to mirror the downvote** (so the signal isn't only negative — "good and bad"):
+  - Schema: add `upvotes INTEGER NOT NULL DEFAULT 0` to `quote_feedback` (in `buildDatabase`'s `CREATE TABLE IF NOT EXISTS`; also a guarded `ALTER TABLE ... ADD COLUMN upvotes` migration for the already-deployed DB, same pattern used for the `people.color` migration on the Pi).
+  - `game.js`: add `upvoteCurrentQuote(game, playerId)` mirroring `downvoteCurrentQuote`, with a separate `currentRound.upvoters` Set. One vote per player per round per direction; allow a player to cast at most one of up/down per round (if they click the other, ignore or switch — pick "one direction wins, first click locks", simplest).
+  - `db.js`: `upvoteQuote(messageId)` mirroring `downvoteQuote`; extend `getCandidateQuotes` to also select `upvotes`.
+  - `server.js`: `quote:upvote` → `quote:upvoted { count }`, mirroring the downvote events.
+  - Client: an "😂 great quote" button next to the "👎 bad quote" button on the reveal screen; same disable-after-click + live count behavior.
+- **Fold feedback into the score at ingest (`ingest/common.js`), persistently:** after `twoStageLlmRank` computes each `q.humorScore`, and before `buildDatabase` writes rows, read `quote_feedback` for every kept quote and apply a deterministic adjustment, e.g. `humorScore = clamp(humorScore + UPVOTE_BONUS*upvotes − DOWNVOTE_PENALTY*downvotes, 0, 100)` (suggest `UPVOTE_BONUS = 8`, `DOWNVOTE_PENALTY = 15` — downvotes bite harder; tune with the user). Because `quote_feedback` is never dropped, this compounds across re-ingests: a quote the group repeatedly loves keeps climbing, one they hate stays buried. Keep the existing **runtime** hard-exclude in `drawQuotes` (`downvotes >= DOWNVOTE_HIDE_THRESHOLD`) so a bad quote disappears *immediately* mid-session without waiting for a re-ingest.
+- **The real "training" feedback loop (optional, human-facing, privacy-safe):** add an ingest flag `--feedback-report` that prints to the user's own terminal the quotes where humans and the LLM most disagree — e.g. LLM-rated high but downvoted, or LLM-rated low but upvoted — as counts + text **for the user to read**, never sent anywhere. This is how *you* decide whether to nudge the Stage-B prompt. The implementing agent must not read this output beyond confirming exit 0.
+
+## 23. Show each person's predictability at the end of the game
+
+**Today:** the game-over board (`renderPredictabilityBoard`) only lists people with `total_guesses >= 10` **all-time**, so short or fresh games often show nothing (as seen in testing). **Wanted:** at the end of every game, always show how predictable each person was.
+
+- **Track per-game predictability in memory:** on the game object, accumulate as reveals happen (in `revealRound` or where `doReveal` already computes guesses): for the round's author `personId`, add `+1` shown, `+guessedCount`, `+correctCount`. Store on `game.perGameStats` (Map personId → {shown, guesses, correct}).
+- **Emit both views in `game:over`:** keep the existing all-time `guessability` (from `db.getGuessability()`), and add `thisGame: [{personId, name, pct, sample}]` computed from `game.perGameStats` for **every person who appeared this game**, no minimum-sample gate (it's this game's data, small is expected — label it clearly). Sort most-predictable first.
+- **Client:** the game-over screen shows a "This game" predictability section that is always populated when the game had ≥1 answered round, above the existing "All-time" board (which keeps its 10-guess threshold and stays the cumulative view). Use each person's color dot next to their name. Phrase honestly: "This game: Talon — 3/4 guessed right (75%)". If nobody answered any round, hide the section.
+- Because §21 keeps the game-over screen visible before the "Back to lobby" click, this fits the same screen — the host reads the stats, then returns to lobby.
+
+## 24. V4 socket contract additions & implementation order
+
+| direction | event | payload |
+|---|---|---|
+| C→S | `game:to-lobby` | `{}` (host only; replaces `game:again`) |
+| S→C | `game:lobby` | `{}` (room-wide; clients `showScreen("lobby")`) |
+| C→S | `quote:upvote` | `{}` (current round quote) |
+| S→C | `quote:upvoted` | `{ count }` |
+| S→C | `game:over` | now also `{ thisGame: [{personId, name, pct, sample}] }` alongside `guessability` |
+
+Order:
+1. §23 per-game predictability (self-contained: `game.js` accumulation + `game:over` payload + client section). Verify with a 2-round test game.
+2. §21 back-to-lobby (`returnToLobby`, `game:to-lobby`/`game:lobby`, client rename + prefill). Verify a full game → lobby → change settings → new game with the same players.
+3. §22 upvote + schema migration + events + client button, then the ingest score-fold and `--feedback-report`. Migrate the deployed Pi DB (guarded `ALTER TABLE`), no re-ingest required for the live exclusion path.
+
+Update `server/game.test.js` for `returnToLobby` (host-only, resets to lobby, retains players) and `upvoteCurrentQuote` (once per player per round), mirroring the existing `downvoteCurrentQuote` test.
+
+Definition of done for v4: finishing a game shows a per-person "this game" predictability readout, then a "Back to lobby" button returns all still-connected players to the lobby with editable, prefilled settings for a fresh game; players can both up- and down-vote a quote; downvotes still hide a quote live at 3, and both vote directions persistently shift `humor_score` at the next ingest without ever putting real message text into an LLM prompt.

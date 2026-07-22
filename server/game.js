@@ -119,6 +119,7 @@ function createGame(roomCode, hostId, hostName, now = Date.now()) {
     people: [],
     roundIndex: -1,
     currentRound: null,
+    perGameStats: new Map(),
     createdAt: now,
   };
 }
@@ -187,6 +188,7 @@ function startGame(game, hostId, settings, candidateQuotes, people, rng = Math.r
   game.people = people;
   game.status = "in-progress";
   game.roundIndex = -1;
+  game.perGameStats = new Map(); // personId -> { shown, guesses, correct }, reset every game
   for (const p of game.players.values()) p.score = 0;
 
   return startNextRound(game, rng, now);
@@ -207,17 +209,31 @@ function startNextRound(game, rng = Math.random, now = Date.now()) {
     endsAt: now + game.settings.roundSeconds * 1000,
     answers: new Map(), // playerId -> { personId, answeredAt }
     downvoters: new Set(), // playerIds who've downvoted this round's quote
+    upvoters: new Set(), // playerIds who've upvoted this round's quote
   };
   game.status = "in-progress";
   return game.currentRound;
 }
 
-/** Records a downvote from `playerId` for the current round's quote. Returns false if they already voted this round. */
+/**
+ * Records a vote from `playerId` for the current round's quote. A player gets one
+ * vote per round total — whichever direction they click first locks it; clicking
+ * the other direction afterward is ignored (returns false), same as clicking their
+ * own direction twice.
+ */
 function downvoteCurrentQuote(game, playerId) {
   if (!game.currentRound) throw new GameError("No round is currently active.");
   if (!game.players.has(playerId)) throw new GameError("Unknown player.");
-  if (game.currentRound.downvoters.has(playerId)) return false;
+  if (game.currentRound.downvoters.has(playerId) || game.currentRound.upvoters.has(playerId)) return false;
   game.currentRound.downvoters.add(playerId);
+  return true;
+}
+
+function upvoteCurrentQuote(game, playerId) {
+  if (!game.currentRound) throw new GameError("No round is currently active.");
+  if (!game.players.has(playerId)) throw new GameError("Unknown player.");
+  if (game.currentRound.upvoters.has(playerId) || game.currentRound.downvoters.has(playerId)) return false;
+  game.currentRound.upvoters.add(playerId);
   return true;
 }
 
@@ -266,6 +282,14 @@ function revealRound(game, now = Date.now()) {
     guesses.push({ playerId: player.id, personId: answer.personId, correct, points });
   }
 
+  const totalGuesses = guesses.filter((g) => g.personId != null).length;
+  const correctGuessCount = guesses.filter((g) => g.correct).length;
+  const stat = game.perGameStats.get(correctPersonId) || { shown: 0, guesses: 0, correct: 0 };
+  stat.shown += 1;
+  stat.guesses += totalGuesses;
+  stat.correct += correctGuessCount;
+  game.perGameStats.set(correctPersonId, stat);
+
   game.status = "reveal";
   return {
     correctPersonId,
@@ -273,6 +297,23 @@ function revealRound(game, now = Date.now()) {
     guesses,
     scores: [...game.players.values()].map((p) => ({ playerId: p.id, name: p.name, score: p.score })),
   };
+}
+
+/** Per-game predictability for every person whose quote got at least one guess this game, most-predictable first. */
+function thisGamePredictability(game) {
+  const result = [];
+  for (const [personId, stat] of game.perGameStats || []) {
+    if (stat.guesses === 0) continue; // no guesses recorded — no meaningful percentage to show
+    const person = game.people.find((p) => p.id === personId);
+    result.push({
+      personId,
+      name: person ? person.displayName : "?",
+      pct: Math.round((stat.correct / stat.guesses) * 100),
+      sample: stat.guesses,
+    });
+  }
+  result.sort((a, b) => b.pct - a.pct);
+  return result;
 }
 
 function nextRound(game, requesterId, rng = Math.random, now = Date.now()) {
@@ -291,12 +332,19 @@ function finalScores(game) {
     .sort((a, b) => b.score - a.score);
 }
 
-function playAgain(game, requesterId, candidateQuotes, rng = Math.random, now = Date.now()) {
+/**
+ * Sends the room back to the lobby after a finished game. Players and their
+ * connection state are untouched; scores reset the next time startGame runs.
+ * `game.settings` is deliberately kept (not cleared) so the lobby can prefill
+ * the host's controls with what was last used.
+ */
+function returnToLobby(game, requesterId) {
   requireHost(game, requesterId);
   if (game.status !== "game-over") throw new GameError("Game isn't over yet.");
   game.status = "lobby";
-  const settings = game.settings;
-  return { readyToStart: () => startGame(game, requesterId, settings, candidateQuotes, game.people, rng, now) };
+  game.roundIndex = -1;
+  game.quotes = [];
+  game.currentRound = null;
 }
 
 module.exports = {
@@ -316,10 +364,12 @@ module.exports = {
   nextRound,
   isGameOver,
   finalScores,
-  playAgain,
+  returnToLobby,
   drawQuotes,
   buildChoices,
   downvoteCurrentQuote,
+  upvoteCurrentQuote,
+  thisGamePredictability,
   REJOIN_GRACE_MS,
   DOWNVOTE_HIDE_THRESHOLD,
 };

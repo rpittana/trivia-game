@@ -495,10 +495,11 @@ function buildDatabase(dbPath, people, kept) {
       rated_at TEXT NOT NULL,
       PRIMARY KEY (message_id, model, prompt_version, stage)
     );
-    -- Never dropped: downvotes and guessability stats must survive re-ingest.
+    -- Never dropped: votes and guessability stats must survive re-ingest.
     CREATE TABLE IF NOT EXISTS quote_feedback (
       message_id TEXT PRIMARY KEY,
-      downvotes INTEGER NOT NULL DEFAULT 0
+      downvotes INTEGER NOT NULL DEFAULT 0,
+      upvotes INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS person_stats (
       person_id INTEGER PRIMARY KEY,
@@ -524,6 +525,12 @@ function buildDatabase(dbPath, people, kept) {
       times_played INTEGER NOT NULL DEFAULT 0
     );
   `);
+
+  // Guarded migration for a quote_feedback table created before `upvotes` existed.
+  const feedbackCols = db.prepare("PRAGMA table_info(quote_feedback)").all().map((c) => c.name);
+  if (!feedbackCols.includes("upvotes")) {
+    db.exec("ALTER TABLE quote_feedback ADD COLUMN upvotes INTEGER NOT NULL DEFAULT 0");
+  }
 
   const insertPerson = db.prepare("INSERT INTO people (id, name, color) VALUES (?, ?, ?)");
   const insertQuote = db.prepare(
@@ -556,6 +563,72 @@ function printPreview(kept, n, peopleById) {
   }
 }
 
+// ---------- vote-driven curation ----------
+//
+// The local LLM's weights can't be fine-tuned by this app, and real chat text
+// never goes into a prompt as a few-shot example (that's the privacy rule from
+// the v3 incident). Instead, human up/downvotes are a persistent scoring signal
+// that permanently overrides the LLM's guess for that quote, compounding across
+// every re-ingest — a quote the group keeps loving climbs, one they keep hating
+// stays buried. This is the real human-in-the-loop "trainer": it adjusts scores,
+// not model weights.
+
+const UPVOTE_BONUS = 8;
+const DOWNVOTE_PENALTY = 15;
+
+/** Mutates `kept` items' humorScore in place, folding in persisted votes. Call after LLM scoring, before the final DB write. */
+function applyFeedbackFold(kept, db) {
+  const getFeedback = db.prepare("SELECT upvotes, downvotes FROM quote_feedback WHERE message_id = ?");
+  for (const q of kept) {
+    const row = getFeedback.get(q.id);
+    if (!row || (row.upvotes === 0 && row.downvotes === 0)) continue;
+    const adjusted = q.humorScore + UPVOTE_BONUS * row.upvotes - DOWNVOTE_PENALTY * row.downvotes;
+    q.humorScore = Math.max(0, Math.min(100, Math.round(adjusted)));
+  }
+}
+
+/**
+ * Prints (to the user's own terminal only) the quotes where your votes and the AI's
+ * pre-fold rating disagreed most — e.g. the AI rated it high but you downvoted it, or
+ * the AI dismissed it but you upvoted it. This is how you decide whether to nudge the
+ * Stage B prompt. `preFoldScores` is a Map<messageId, humorScore> snapshotted before
+ * applyFeedbackFold ran. The implementing agent must not read this output beyond
+ * confirming the process exits 0 — it contains real quote text, for the user only.
+ */
+function printFeedbackReport(kept, preFoldScores, db, peopleById) {
+  const getFeedback = db.prepare("SELECT upvotes, downvotes FROM quote_feedback WHERE message_id = ?");
+  const disagreements = [];
+  for (const q of kept) {
+    const row = getFeedback.get(q.id);
+    if (!row || (row.upvotes === 0 && row.downvotes === 0)) continue;
+    const preScore = preFoldScores.get(q.id) ?? q.humorScore;
+    const aiLikedYouDidnt = preScore >= 60 && row.downvotes > 0;
+    const aiDismissedYouLiked = preScore <= 30 && row.upvotes > 0;
+    if (aiLikedYouDidnt || aiDismissedYouLiked) {
+      disagreements.push({
+        q,
+        preScore,
+        upvotes: row.upvotes,
+        downvotes: row.downvotes,
+        reason: aiLikedYouDidnt ? "AI liked it, you downvoted" : "AI dismissed it, you upvoted",
+      });
+    }
+  }
+  disagreements.sort((a, b) => b.upvotes + b.downvotes - (a.upvotes + a.downvotes));
+
+  console.log(`\nFeedback disagreement report — ${disagreements.length} quote(s) where your votes and the AI disagreed:`);
+  if (disagreements.length === 0) {
+    console.log(`  (none yet — vote 👍/👎 on quotes during a game, then re-run ingest with --feedback-report)`);
+    return;
+  }
+  for (const d of disagreements) {
+    const name = peopleById.get(d.q.personId) || "?";
+    console.log(
+      `  [AI rated ${d.preScore.toFixed(0)}, up:${d.upvotes} down:${d.downvotes}] (${d.reason}) ${name}: ${d.q.content}`
+    );
+  }
+}
+
 module.exports = {
   PROMPT_VERSION,
   LAUGH_RE,
@@ -576,4 +649,6 @@ module.exports = {
   buildDatabase,
   updateHumorScores,
   printPreview,
+  applyFeedbackFold,
+  printFeedbackReport,
 };

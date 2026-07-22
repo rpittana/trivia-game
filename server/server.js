@@ -122,7 +122,11 @@ function doAdvance(roomCode) {
 function handleRoundResult(roomCode, round) {
   const g = rooms.get(roomCode);
   if (round === null) {
-    io.to(roomCode).emit("game:over", { finalScores: game.finalScores(g), guessability: db.getGuessability() });
+    io.to(roomCode).emit("game:over", {
+      finalScores: game.finalScores(g),
+      guessability: db.getGuessability(),
+      thisGame: game.thisGamePredictability(g),
+    });
     return;
   }
   db.incrementTimesPlayed(round.quote.id);
@@ -230,6 +234,21 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("quote:upvote", () => {
+    const { roomCode, playerId } = socket.data;
+    const g = rooms.get(roomCode);
+    if (!g) return;
+    try {
+      const counted = game.upvoteCurrentQuote(g, playerId);
+      if (counted) {
+        const count = db.upvoteQuote(g.currentRound.quote.id);
+        io.to(roomCode).emit("quote:upvoted", { count });
+      }
+    } catch (err) {
+      socket.emit("error", { message: err.message });
+    }
+  });
+
   socket.on("round:next", () => {
     const { roomCode, playerId } = socket.data;
     const g = rooms.get(roomCode);
@@ -243,18 +262,15 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("game:again", () => {
+  socket.on("game:to-lobby", () => {
     const { roomCode, playerId } = socket.data;
     const g = rooms.get(roomCode);
     if (!g) return;
     try {
       clearTimers(roomCode);
-      const candidates = db.getCandidateQuotes();
-      const { readyToStart } = game.playAgain(g, playerId, candidates, Math.random, Date.now());
-      const round = readyToStart();
-      db.incrementTimesPlayed(round.quote.id);
-      emitRoundStart(roomCode, round, g.roundIndex + 1);
-      scheduleExpiry(roomCode);
+      game.returnToLobby(g, playerId);
+      io.to(roomCode).emit("game:lobby");
+      broadcastLobby(roomCode);
     } catch (err) {
       socket.emit("error", { message: err.message });
     }

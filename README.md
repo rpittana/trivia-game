@@ -29,6 +29,7 @@ Useful flags:
 - `--preview=30` — how many top quotes to print for you to eyeball after a run
 - `--list-chats` — list your iMessage group chats (names/handles/counts only) to find the right `imessageChatId`
 - `--show-chat=<id>` — show one chat's participants, resolved against your Contacts where possible
+- `--feedback-report` — print quotes where your in-game 👍/👎 votes and the AI's rating disagreed, so you can judge whether to tweak the prompt (votes themselves always shift `humor_score`, this flag just shows you where)
 
 ## Running the game
 

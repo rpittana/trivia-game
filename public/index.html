@@ -72,7 +72,10 @@
       <h2 id="reveal-heading"></h2>
       <blockquote id="reveal-quote"></blockquote>
       <p id="reveal-date" class="subtitle"></p>
-      <button id="btn-downvote" class="btn-downvote">👎 Bad quote <span id="downvote-count"></span></button>
+      <div class="vote-row">
+        <button id="btn-upvote" class="btn-vote btn-upvote">😂 Great quote <span id="upvote-count"></span></button>
+        <button id="btn-downvote" class="btn-vote btn-downvote">👎 Bad quote <span id="downvote-count"></span></button>
+      </div>
       <ul id="reveal-guesses"></ul>
       <h3>Scoreboard</h3>
       <ol id="reveal-scores"></ol>
@@ -83,11 +86,15 @@
     <section id="screen-gameover" class="screen">
       <h2>Final scores</h2>
       <ol id="final-scores"></ol>
+      <div id="this-game-board" class="predictability-board hidden">
+        <h3>Predictability <span class="subtitle">(this game)</span></h3>
+        <ul id="this-game-list"></ul>
+      </div>
       <div id="predictability-board" class="predictability-board hidden">
         <h3>Predictability Board <span class="subtitle">(all-time)</span></h3>
         <ul id="predictability-list"></ul>
       </div>
-      <button id="btn-again" class="hidden">Play again</button>
+      <button id="btn-to-lobby" class="hidden">Back to lobby</button>
       <p id="gameover-waiting" class="subtitle hidden">Waiting for host...</p>
     </section>
   </main>

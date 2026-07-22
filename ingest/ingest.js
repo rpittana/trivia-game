@@ -5,7 +5,7 @@
 //   node ingest/ingest.js --list-chats [--backup=<path>]        list iMessage group chats, then stop
 //   node ingest/ingest.js <export.json ...> [options]           run the full pipeline
 //
-// Options: --model=qwen2.5:7b-instruct --no-ollama --candidates=2000 --preview=10
+// Options: --model=qwen2.5:7b-instruct --no-ollama --candidates=2000 --preview=10 --feedback-report
 "use strict";
 
 const fs = require("fs");
@@ -25,11 +25,13 @@ function parseArgs(argv) {
   let listChats = false;
   let showChat = null;
   let backup = null;
+  let feedbackReport = false;
 
   for (const arg of argv) {
     if (arg === "--no-ollama") useOllama = false;
     else if (arg === "--init-config") initConfig = true;
     else if (arg === "--list-chats") listChats = true;
+    else if (arg === "--feedback-report") feedbackReport = true;
     else if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
     else if (arg.startsWith("--candidates=")) candidates = parseInt(arg.slice("--candidates=".length), 10);
     else if (arg.startsWith("--preview=")) preview = parseInt(arg.slice("--preview=".length), 10);
@@ -38,7 +40,7 @@ function parseArgs(argv) {
     else if (arg.startsWith("--")) throw new Error(`Unknown flag: ${arg}`);
     else files.push(arg);
   }
-  return { files, model, useOllama, candidates, preview, initConfig, listChats, showChat, backup };
+  return { files, model, useOllama, candidates, preview, initConfig, listChats, showChat, backup, feedbackReport };
 }
 
 function loadDiscordExports(files) {
@@ -125,7 +127,7 @@ function runInitConfig(files) {
 
 // ---------- main pipeline ----------
 
-async function runPipeline({ files, model, useOllama, candidates, preview }) {
+async function runPipeline({ files, model, useOllama, candidates, preview, feedbackReport }) {
   const peopleConfig = common.loadPeopleConfig();
   if (peopleConfig.people.length === 0) {
     console.error("No included people in data/people.json (everyone has include:false). Nothing to do.");
@@ -222,15 +224,22 @@ async function runPipeline({ files, model, useOllama, candidates, preview }) {
   if (useOllama) {
     console.log(`\nScoring (pass 2: two-stage local LLM curation via Ollama, model=${model}, candidates=${candidates})...`);
     await common.twoStageLlmRank(kept, { model, candidates, cacheDb: db });
-    common.updateHumorScores(db, kept);
   } else {
     console.log(`\nSkipping LLM curation (--no-ollama) — humor_score falls back to heuristic percentile.`);
+  }
+
+  const preFoldScores = new Map(kept.map((q) => [q.id, q.humorScore]));
+  common.applyFeedbackFold(kept, db);
+  common.updateHumorScores(db, kept);
+
+  const peopleById = new Map(peopleConfig.people.map((p) => [p.id, p.name]));
+  if (feedbackReport) {
+    common.printFeedbackReport(kept, preFoldScores, db, peopleById);
   }
 
   db.close();
 
   console.log(`\nWrote ${kept.length} quotes from ${peopleConfig.people.length} people to ${dbPath}`);
-  const peopleById = new Map(peopleConfig.people.map((p) => [p.id, p.name]));
   common.printPreview(kept, preview, peopleById);
 }
 

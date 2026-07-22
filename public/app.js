@@ -107,7 +107,7 @@ socket.on("game:meta", ({ people }) => {
   }
 });
 
-socket.on("lobby:update", ({ players }) => {
+socket.on("lobby:update", ({ players, settings }) => {
   state.players = players;
   const me = players.find((p) => p.id === state.playerId);
   state.isHost = !!(me && me.isHost);
@@ -120,8 +120,19 @@ socket.on("lobby:update", ({ players }) => {
     list.appendChild(li);
   }
 
+  if (settings) {
+    document.getElementById("opt-rounds").value = settings.rounds;
+    document.getElementById("opt-seconds").value = settings.roundSeconds;
+    document.getElementById("opt-pool").value = settings.pool;
+    document.getElementById("opt-show-year").checked = !!settings.showYear;
+  }
+
   document.getElementById("host-controls").classList.toggle("hidden", !state.isHost);
   document.getElementById("lobby-waiting").classList.toggle("hidden", state.isHost);
+});
+
+socket.on("game:lobby", () => {
+  showScreen("lobby");
 });
 
 document.getElementById("btn-start").addEventListener("click", () => {
@@ -230,9 +241,10 @@ socket.on("round:reveal", ({ correctPersonId, sentAt, guesses, scores }) => {
   document.getElementById("btn-next").classList.toggle("hidden", !state.isHost);
   document.getElementById("reveal-waiting").classList.toggle("hidden", state.isHost);
 
-  const downvoteBtn = document.getElementById("btn-downvote");
-  downvoteBtn.disabled = false;
+  document.getElementById("btn-downvote").disabled = false;
+  document.getElementById("btn-upvote").disabled = false;
   document.getElementById("downvote-count").textContent = "";
+  document.getElementById("upvote-count").textContent = "";
 
   // Full-card flash + sound + confetti, based on whether I personally got it right.
   const revealScreen = screens.reveal;
@@ -255,43 +267,66 @@ document.getElementById("btn-next").addEventListener("click", () => {
   socket.emit("round:next");
 });
 
+function lockVoteButtons() {
+  document.getElementById("btn-downvote").disabled = true;
+  document.getElementById("btn-upvote").disabled = true;
+}
+
 document.getElementById("btn-downvote").addEventListener("click", () => {
-  const btn = document.getElementById("btn-downvote");
-  btn.disabled = true;
+  lockVoteButtons();
   socket.emit("quote:downvote");
+});
+
+document.getElementById("btn-upvote").addEventListener("click", () => {
+  lockVoteButtons();
+  socket.emit("quote:upvote");
 });
 
 socket.on("quote:downvoted", ({ count }) => {
   document.getElementById("downvote-count").textContent = `(${count})`;
 });
 
+socket.on("quote:upvoted", ({ count }) => {
+  document.getElementById("upvote-count").textContent = `(${count})`;
+});
+
 // ---------- Game over ----------
 
-socket.on("game:over", ({ finalScores, guessability }) => {
+socket.on("game:over", ({ finalScores, guessability, thisGame }) => {
   showScreen("gameover");
   renderScores("final-scores", finalScores, { animate: true, crownFirst: true });
-  renderPredictabilityBoard(guessability || []);
-  document.getElementById("btn-again").classList.toggle("hidden", !state.isHost);
+  renderPredictabilityBoard("this-game-board", "this-game-list", thisGame || []);
+  renderPredictabilityBoard("predictability-board", "predictability-list", guessability || []);
+  document.getElementById("btn-to-lobby").classList.toggle("hidden", !state.isHost);
   document.getElementById("gameover-waiting").classList.toggle("hidden", state.isHost);
   if (window.Sound) window.Sound.gameOver();
   if (window.Effects) window.Effects.confettiBurst(70);
 });
 
-function renderPredictabilityBoard(guessability) {
-  const board = document.getElementById("predictability-board");
-  const list = document.getElementById("predictability-list");
-  board.classList.toggle("hidden", guessability.length === 0);
+function renderPredictabilityBoard(boardId, listId, entries) {
+  const board = document.getElementById(boardId);
+  const list = document.getElementById(listId);
+  board.classList.toggle("hidden", entries.length === 0);
   list.innerHTML = "";
-  guessability.forEach((entry, i) => {
+  entries.forEach((entry, i) => {
     const li = document.createElement("li");
-    const icon = i === 0 ? "🔮" : i === guessability.length - 1 ? "🎭" : "";
-    li.textContent = `${icon} ${entry.name} — ${entry.pct}% guessed right (${entry.sample} guesses)`.trim();
+    const icon = i === 0 ? "🔮" : i === entries.length - 1 ? "🎭" : "";
+    const person = state.people.get(entry.personId);
+    if (person) {
+      const dot = document.createElement("span");
+      dot.className = "color-dot";
+      dot.style.background = person.color;
+      li.appendChild(dot);
+    }
+    li.appendChild(
+      document.createTextNode(`${icon} ${entry.name} — ${entry.pct}% guessed right (${entry.sample} guesses)`.trim())
+    );
     list.appendChild(li);
   });
 }
 
-document.getElementById("btn-again").addEventListener("click", () => {
-  socket.emit("game:again");
+document.getElementById("btn-to-lobby").addEventListener("click", () => {
+  socket.emit("game:to-lobby");
 });
 
 const prevScores = new Map(); // playerId -> last-rendered score, for count-up animation

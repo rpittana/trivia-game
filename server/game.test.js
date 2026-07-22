@@ -171,6 +171,51 @@ test("scoring: correct answer awards 100 + speed bonus, wrong answer awards 0", 
   assert.ok(byPlayer.fast.points > byPlayer.slow.points, "faster answer should score more");
 });
 
+test("thisGamePredictability tracks per-game accuracy and excludes people with zero guesses", () => {
+  const g = game.createGame("ABCD", "host1", "Host");
+  game.addPlayer(g, "fast", "Fast");
+  game.addPlayer(g, "slow", "Slow");
+  const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, people, seededRng(11), 0);
+
+  const round1AuthorId = g.currentRound.quote.personId;
+  const otherId = round1AuthorId === "host1" ? "p2" : "host1";
+  game.submitAnswer(g, "fast", round1AuthorId, 1000); // correct
+  game.submitAnswer(g, "slow", otherId, 1000); // wrong
+  game.revealRound(g, 20000);
+  game.nextRound(g, "host1", seededRng(1), 21000);
+  // nobody answers round 2 — reveal with zero guesses
+  game.revealRound(g, 41000);
+
+  const board = game.thisGamePredictability(g);
+  assert.equal(board.length, 1, "the round-2 author had zero guesses and should be excluded");
+  assert.equal(board[0].personId, round1AuthorId);
+  assert.equal(board[0].sample, 2);
+  assert.equal(board[0].pct, 50);
+});
+
+test("returnToLobby is host-only, resets status to lobby, and retains players + settings", () => {
+  const g = game.createGame("ABCD", "host1", "Host");
+  game.addPlayer(g, "p2", "Player Two");
+  const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 1, roundSeconds: 20, pool: "funny", showYear: true }, candidates, people, seededRng(6), 0);
+  game.revealRound(g, 20000);
+  game.nextRound(g, "host1", seededRng(1), 21000); // round 2 doesn't exist -> game-over
+
+  assert.throws(() => game.returnToLobby(g, "p2"), game.GameError, "non-host cannot return the room to lobby");
+
+  game.returnToLobby(g, "host1");
+  assert.equal(g.status, "lobby");
+  assert.equal(g.currentRound, null);
+  assert.equal(g.players.size, 2, "players stay in the room");
+  assert.ok(g.players.has("host1") && g.players.has("p2"));
+  assert.deepEqual(g.settings, { rounds: 1, roundSeconds: 20, pool: "funny", showYear: true }, "settings kept for lobby prefill");
+
+  assert.throws(() => game.returnToLobby(g, "host1"), game.GameError, "can't return to lobby twice — game isn't over anymore");
+});
+
 test("downvoteCurrentQuote counts once per player per round", () => {
   const g = game.createGame("ABCD", "host1", "Host");
   game.addPlayer(g, "p2", "Player Two");
@@ -184,6 +229,35 @@ test("downvoteCurrentQuote counts once per player per round", () => {
   assert.equal(first, true);
   assert.equal(second, false, "same player voting twice should not count again");
   assert.equal(third, true, "a different player can still vote");
+});
+
+test("upvoteCurrentQuote counts once per player per round", () => {
+  const g = game.createGame("ABCD", "host1", "Host");
+  game.addPlayer(g, "p2", "Player Two");
+  const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, people, seededRng(4), 0);
+
+  const first = game.upvoteCurrentQuote(g, "p2");
+  const second = game.upvoteCurrentQuote(g, "p2");
+  const third = game.upvoteCurrentQuote(g, "host1");
+  assert.equal(first, true);
+  assert.equal(second, false, "same player voting twice should not count again");
+  assert.equal(third, true, "a different player can still vote");
+});
+
+test("a player's vote direction locks — the other direction is ignored afterward", () => {
+  const g = game.createGame("ABCD", "host1", "Host");
+  game.addPlayer(g, "p2", "Player Two");
+  const candidates = [mkQuote("q1", "host1"), mkQuote("q2", "p2")];
+  const people = mkPeople(["host1", "p2"]);
+  game.startGame(g, "host1", { rounds: 2, roundSeconds: 20 }, candidates, people, seededRng(4), 0);
+
+  assert.equal(game.downvoteCurrentQuote(g, "p2"), true);
+  assert.equal(game.upvoteCurrentQuote(g, "p2"), false, "already downvoted this round — upvote is ignored");
+
+  assert.equal(game.upvoteCurrentQuote(g, "host1"), true);
+  assert.equal(game.downvoteCurrentQuote(g, "host1"), false, "already upvoted this round — downvote is ignored");
 });
 
 test("buildChoices always includes the correct person exactly once", () => {
