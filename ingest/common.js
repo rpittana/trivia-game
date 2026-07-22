@@ -264,6 +264,7 @@ async function ollamaGenerate(prompt, model) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, prompt, stream: false, options: { temperature: 0, seed: 7 } }),
+    body: JSON.stringify({ model, prompt, stream: false, options: { temperature: 0, seed: 7 } }),
   });
   if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
   const data = await res.json();
@@ -275,6 +276,9 @@ async function stageAGate(content, model) {
     `You will see a single chat message with NO other context. Decide if it makes COMPLETE sense entirely ` +
     `on its own: no missing references to earlier conversation (words like "that", "he", "it", "this" pointing ` +
     `to something unstated), no logistics questions ("you coming?", "what time"), and it is not an answer to a ` +
+    `question we can't see. Also reply NO if the message is a reaction to, correction of, disagreement with, ` +
+    `or continuation of some unseen prior statement — it must stand entirely on its own. Reply with exactly ` +
+    `one word: YES or NO.\n\n` +
     `question we can't see. Also reply NO if the message is a reaction to, correction of, disagreement with, ` +
     `or continuation of some unseen prior statement — it must stand entirely on its own. Reply with exactly ` +
     `one word: YES or NO.\n\n` +
@@ -293,10 +297,21 @@ async function stageBRating(content, model) {
     `of nowhere. A plain statement, question, correction, complaint, or opinion about a game/show/plan is a ` +
     `0-2 even if it's emphatic, in all caps, or has swearing in it — intensity is not the same as funny. ` +
     `Fewer than 1 in 20 messages you see deserves higher than a 7.\n\n` +
+    `game, from 0 (boring) to 10 (hilarious).\n\n` +
+    `Be a HARSH, discriminating critic. Most chat messages are NOT funny: the median message should score 1. ` +
+    `Reserve 8-10 for messages so absurd, unhinged, or quotable that they'd be funny printed on a T-shirt out ` +
+    `of nowhere. A plain statement, question, correction, complaint, or opinion about a game/show/plan is a ` +
+    `0-2 even if it's emphatic, in all caps, or has swearing in it — intensity is not the same as funny. ` +
+    `Fewer than 1 in 20 messages you see deserves higher than a 7.\n\n` +
     `Examples:\n` +
     `"I explained to the police officer that time is a construct and he still gave me the ticket" -> 9\n` +
     `"genuinely feel like garlic bread is the best thing humanity has ever created" -> 6\n` +
     `"what time are we meeting tomorrow" -> 1\n` +
+    `"yeah that's exactly what happened to me too lol" -> 1\n` +
+    `"you don't have Minecraft" -> 1\n` +
+    `"how does this company even make money" -> 1\n` +
+    `"the shop is not the same thing" -> 0\n` +
+    `"BREATH OF THE WILD" -> 2\n\n` +
     `"yeah that's exactly what happened to me too lol" -> 1\n` +
     `"you don't have Minecraft" -> 1\n` +
     `"how does this company even make money" -> 1\n` +
@@ -308,6 +323,42 @@ async function stageBRating(content, model) {
   const match = response.match(/-?\d+(\.\d+)?/);
   if (!match) throw new Error(`Could not parse a number from Ollama response: "${response}"`);
   return Math.max(0, Math.min(10, parseFloat(match[0])));
+}
+
+/**
+ * Picks the LLM candidate pool with an even split per source, so one source's
+ * heuristic-score distribution (e.g. Discord's reply-burst signal running hotter
+ * than iMessage's tapback signal) can't crowd the other out of curation entirely.
+ * Any shortfall from a source with too few candidates is topped up from whichever
+ * source has the next-best remaining quotes.
+ */
+function selectCandidatePool(kept, candidates) {
+  const bySource = new Map();
+  for (const q of kept) {
+    if (!bySource.has(q.source)) bySource.set(q.source, []);
+    bySource.get(q.source).push(q);
+  }
+  for (const list of bySource.values()) list.sort((a, b) => b.rawScore - a.rawScore);
+
+  const sources = [...bySource.keys()];
+  const perSourceTarget = Math.ceil(candidates / sources.length);
+
+  const pool = [];
+  const poolIds = new Set();
+  for (const source of sources) {
+    const take = bySource.get(source).slice(0, perSourceTarget);
+    for (const q of take) {
+      pool.push(q);
+      poolIds.add(q.id);
+    }
+  }
+
+  if (pool.length < candidates) {
+    const remaining = kept.filter((q) => !poolIds.has(q.id)).sort((a, b) => b.rawScore - a.rawScore);
+    pool.push(...remaining.slice(0, candidates - pool.length));
+  }
+
+  return pool.slice(0, candidates);
 }
 
 /**
