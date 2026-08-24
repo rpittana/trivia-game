@@ -1,4 +1,4 @@
-# Who Said It? — Discord Quote Trivia
+# Who Said It? Discord Quote Trivia
 
 Private, self-hosted "guess who sent this message" game built from your Discord export. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
 
